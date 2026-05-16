@@ -1,11 +1,13 @@
 "use client";
 
+import Link from "next/link";
 import {
   Download,
   Map,
   Clock,
   Users,
   FileOutput,
+  ChevronLeft,
 } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { themeAccent } from "@/lib/constants";
@@ -48,6 +50,13 @@ export function AppShell({
     <div className="flex h-screen flex-col overflow-hidden bg-[#0e0e0f] text-[#e5e7eb]">
       <header className="flex h-[52px] shrink-0 items-center justify-between border-b border-[#2a2a2e] px-4">
         <div className="flex min-w-0 items-center gap-3">
+          <Link
+            href="/projects"
+            className="shrink-0 rounded-md p-1.5 text-[#9ca3af] transition hover:bg-[#252528] hover:text-[#e5e7eb]"
+            title="Back to projects"
+          >
+            <ChevronLeft className="h-4 w-4" />
+          </Link>
           <h1 className="truncate text-lg font-semibold tracking-tight">
             {projectName}
           </h1>

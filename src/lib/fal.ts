@@ -69,16 +69,24 @@ export async function falSubscribeImage(
     height = 768,
   } = options
 
+  const isImg2Img = Boolean(imageUrl)
+
+  // fal-ai/flux/dev/image-to-image uses different required fields
   const input: Record<string, unknown> = {
     prompt,
-    image_size: { width, height },
     num_inference_steps: 28,
     guidance_scale: 3.5,
   }
 
-  if (imageUrl) {
+  if (isImg2Img) {
     input.image_url = imageUrl
     input.strength = 0.75
+    // image-to-image derives output size from input; don't send image_size
+    if (!model.includes("image-to-image")) {
+      input.image_size = { width, height }
+    }
+  } else {
+    input.image_size = { width, height }
   }
 
   const result = await fal.subscribe(model, { input })

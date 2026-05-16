@@ -396,6 +396,19 @@ export const GeographyCanvas = forwardRef<
               setSynthesizing(true);
               void (async () => {
                 try {
+                  // Export the full canvas (sketch lines + pin markers) as a PNG
+                  const stage = stageRef.current;
+                  const sketchDataurl = stage
+                    ? stage.toDataURL({ pixelRatio: 1 })
+                    : undefined;
+
+                  // Build spatial pin descriptions for the prompt
+                  const pinRefs = pins.map((p) => ({
+                    label: p.label,
+                    canvas_x: p.canvas_x,
+                    canvas_y: p.canvas_y,
+                  }));
+
                   const res = await fetch(
                     `/api/projects/${projectId}/canvas/synthesize`,
                     {
@@ -404,6 +417,10 @@ export const GeographyCanvas = forwardRef<
                       body: JSON.stringify({
                         sketch_description:
                           "Living canvas: enhance brush strokes into cinematic scenery",
+                        sketch_dataurl: sketchDataurl,
+                        pins: pinRefs,
+                        canvas_width: size.width,
+                        canvas_height: size.height,
                       }),
                     },
                   );
@@ -436,7 +453,7 @@ export const GeographyCanvas = forwardRef<
         ) : null}
       </div>
     ),
-    [tool, apiAvailable, projectId],
+    [tool, apiAvailable, projectId, pins, size, synthesizing, stageRef],
   );
 
   return (

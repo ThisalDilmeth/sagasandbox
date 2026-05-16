@@ -1,0 +1,79 @@
+[
+  {
+    "id": "5770b921-2bf0-4b63-bdf9-54063b68f086",
+    "owner_id": "local",
+    "name": "Test123",
+    "theme": "cyberpunk_noir",
+    "aesthetic_style": "Photorealistic",
+    "style_config": {
+      "theme": "cyberpunk_noir",
+      "aesthetic_style": "Photorealistic"
+    },
+    "canvas_state": {
+      "attrs": {
+        "width": 1087,
+        "height": 631,
+        "x": -805.7329080869206,
+        "y": -81.25560793845841,
+        "scaleX": 1.7238620551694714,
+        "scaleY": 1.7238620551694714,
+        "className": "cursor-crosshair"
+      },
+      "className": "Stage",
+      "children": [
+        {
+          "attrs": {
+            "listening": false
+          },
+          "className": "Layer",
+          "children": [
+            {
+              "attrs": {
+                "x": 436.4145645127972,
+                "y": 24.451845095177596,
+                "width": 735.4862276815742,
+                "height": 426.9473869982275,
+                "opacity": 0.85
+              },
+              "className": "Image"
+            }
+          ]
+        },
+        {
+          "attrs": {},
+          "className": "Layer",
+          "children": [
+            {
+              "attrs": {
+                "x": 541,
+                "y": 236
+              },
+              "className": "Group",
+              "children": [
+                {
+                  "attrs": {
+                    "radius": 10,
+                    "fill": "#10B981",
+                    "stroke": "#0e0e0f"
+                  },
+                  "className": "Circle"
+                },
+                {
+                  "attrs": {
+                    "text": "Massive Volcano",
+                    "fill": "#e5e7eb",
+                    "y": 14,
+                    "offsetX": 45
+                  },
+                  "className": "Text"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "created_at": "2026-05-16T22:25:28.751Z",
+    "updated_at": "2026-05-16T22:30:35.156Z"
+  }
+]
