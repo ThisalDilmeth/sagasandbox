@@ -3,16 +3,14 @@ import type { NextConfig } from "next";
 const nextConfig: NextConfig = {
   images: {
     remotePatterns: [
-      // Supabase Storage — generated images from handle-fal-webhook
+      // fal.ai CDN — uses versioned subdomains (v3, v3b, v3c, …)
       {
         protocol: "https",
-        hostname: "*.supabase.co",
-        pathname: "/storage/v1/object/public/**",
+        hostname: "*.fal.media",
       },
-      // fal.ai CDN — raw output URLs before webhook re-uploads to storage
       {
         protocol: "https",
-        hostname: "v3.fal.media",
+        hostname: "fal.media",
       },
       {
         protocol: "https",
