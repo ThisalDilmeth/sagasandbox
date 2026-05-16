@@ -105,7 +105,7 @@ export async function POST(request: Request, context: RouteContext) {
       const entries = pins.map((pin, i) => {
         const subject = locationSubject(pin.label, pin.description);
         const pos = spatialPhrase(pin.canvas_x, pin.canvas_y, cw, ch);
-        return `Landmark ${i + 1}: ${subject} — located at ${pos} of the image.`;
+        return `Landmark ${i + 1} [MUST BE RENDERED]: ${subject} — at ${pos} of the image.`;
       });
 
       const checklist = pins
@@ -116,10 +116,12 @@ export async function POST(request: Request, context: RouteContext) {
 
       sceneBody =
         (useAnchor
-          // When anchoring off existing image: focus instruction on preserving
-          // existing elements and incorporating the updated landmark list.
-          ? `Keep all existing landmarks in their current positions. ` +
-            `Update and integrate the following COMPLETE landmark list into the scene:\n`
+          // Re-synthesis: don't say "preserve" (makes the model resist new additions).
+          // Instead say "evolve" — maintain the general composition but make sure
+          // every listed landmark is clearly present, including newly added ones.
+          ? `Evolve this scene so that ALL of the following landmarks are ` +
+            `clearly visible. Integrate any missing landmarks into the composition ` +
+            `without removing those already present. Full landmark inventory:\n`
           : `A single ultra-wide panoramic ${genreWord} establishing shot ` +
             `containing EXACTLY ${countWord} (${pins.length}) clearly distinct landmarks:\n`
         ) +
@@ -161,9 +163,10 @@ export async function POST(request: Request, context: RouteContext) {
         ? "fal-ai/flux/dev/image-to-image"
         : "fal-ai/flux/dev",
       imageUrl: anchorCdnUrl,
-      // 0.35 = 65% of the existing layout is preserved; new landmarks integrate
-      // without displacing the ones already rendered.
-      strength: 0.35,
+      // 0.55 = 45% of the existing composition is preserved (general layout stable)
+      // while 55% creative budget lets Flux physically build in dramatic new
+      // elements like volcanoes into an already-rendered cyberpunk city.
+      strength: 0.55,
       width: 1280,
       height: 720,
     });
