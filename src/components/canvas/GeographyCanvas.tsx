@@ -405,6 +405,7 @@ export const GeographyCanvas = forwardRef<
                   // Build spatial pin descriptions for the prompt
                   const pinRefs = pins.map((p) => ({
                     label: p.label,
+                    description: p.description,
                     canvas_x: p.canvas_x,
                     canvas_y: p.canvas_y,
                   }));
