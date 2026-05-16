@@ -155,6 +155,8 @@ export function WorkspaceClient({
     );
   }, []);
 
+  const handleHydrated = useCallback(() => setCanvasHydrating(false), []);
+
   const handleCanvasOp = useCallback((op: CanvasOpPayload) => {
     canvasRef.current?.applyCanvasOp(op);
   }, []);
@@ -364,7 +366,7 @@ export function WorkspaceClient({
             highlightedPinId={highlightedPinId}
             initialCanvasState={initialCanvasState}
             loading={canvasHydrating}
-            onHydrated={() => setCanvasHydrating(false)}
+            onHydrated={handleHydrated}
             onPinsChange={setPins}
             onPinSelect={(pin) => {
               setSelectedPin(pin);
