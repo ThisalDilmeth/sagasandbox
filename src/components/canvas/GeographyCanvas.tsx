@@ -120,6 +120,7 @@ export const GeographyCanvas = forwardRef<
   const [drawing, setDrawing] = useState(false);
   const [currentLineId, setCurrentLineId] = useState<string | null>(null);
   const [pinCreator, setPinCreator] = useState<{ x: number; y: number } | null>(null);
+  const [pinsVisible, setPinsVisible] = useState(true);
 
   // Scenery image is stored in *world space* so it moves and zooms with the canvas.
   const [sceneryImageUrl, setSceneryImageUrl] = useState<string | null>(null);
@@ -442,6 +443,18 @@ export const GeographyCanvas = forwardRef<
             {t}
           </button>
         ))}
+        {/* Hide / show pins toggle */}
+        <button
+          type="button"
+          onClick={() => setPinsVisible((v) => !v)}
+          title={pinsVisible ? "Hide location pins" : "Show location pins"}
+          className={cn(
+            "rounded-md px-3 py-1.5 text-xs font-medium",
+            pinsVisible ? "text-[#9ca3af] hover:text-white" : "bg-[#1a1a1e] text-[#7c3aed] ring-1 ring-[#7c3aed]/60",
+          )}
+        >
+          {pinsVisible ? "Hide pins" : "Show pins"}
+        </button>
         {apiAvailable ? (
           <button
             type="button"
@@ -507,7 +520,7 @@ export const GeographyCanvas = forwardRef<
         ) : null}
       </div>
     ),
-    [tool, apiAvailable, projectId, pins, size, synthesizing, stagePos, scale],
+    [tool, apiAvailable, projectId, pins, size, synthesizing, stagePos, scale, pinsVisible],
   );
 
   return (
@@ -590,7 +603,7 @@ export const GeographyCanvas = forwardRef<
               />
             </Group>
           ))}
-          {pins.map((pin) => (
+          {pinsVisible && pins.map((pin) => (
             <Group
               key={pin.id}
               x={pin.canvas_x}

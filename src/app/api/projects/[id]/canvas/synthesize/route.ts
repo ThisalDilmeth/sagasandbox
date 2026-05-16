@@ -20,32 +20,28 @@ function spatialPhrase(x: number, y: number, cw: number, ch: number): string {
   const xPct = x / cw;
   const yPct = y / ch;
 
+  // Horizontal thirds
   const h =
-    xPct < 0.25
-      ? "far left"
-      : xPct < 0.42
-        ? "left side"
-        : xPct < 0.58
-          ? "center"
-          : xPct < 0.75
-            ? "right side"
-            : "far right";
+    xPct < 0.20 ? "the far-left edge" :
+    xPct < 0.40 ? "the left third" :
+    xPct < 0.60 ? "the horizontal center" :
+    xPct < 0.80 ? "the right third" :
+                  "the far-right edge";
 
+  // Vertical thirds
   const v =
-    yPct < 0.25
-      ? "upper"
-      : yPct < 0.42
-        ? "upper-middle"
-        : yPct < 0.58
-          ? "middle"
-          : yPct < 0.75
-            ? "lower-middle"
-            : "lower foreground";
+    yPct < 0.20 ? "the top edge" :
+    yPct < 0.40 ? "the upper third" :
+    yPct < 0.60 ? "the vertical middle" :
+    yPct < 0.80 ? "the lower third" :
+                  "the bottom foreground";
 
-  if (v === "middle" && h === "center") return "in the center of the image";
-  if (v === "middle") return `on the ${h} of the image`;
-  if (h === "center") return `in the ${v} center of the image`;
-  return `in the ${v} ${h} of the image`;
+  const hCenter = h === "the horizontal center";
+  const vCenter = v === "the vertical middle";
+  if (hCenter && vCenter) return "the center of the image";
+  if (hCenter) return v;
+  if (vCenter) return h;
+  return `${v}, ${h}`;
 }
 
 /**
@@ -113,26 +109,35 @@ export async function POST(request: Request, context: RouteContext) {
         `Dramatic atmospheric lighting, volumetric haze, richly detailed textures. ` +
         `Cinematic establishing shot.`;
     } else {
-      // Multiple pins — compose a panorama where every pin is a distinct visual landmark.
-      const landmarkLines = pins
-        .map((pin) => {
-          const subject = locationSubject(pin.label, pin.description);
-          const pos = spatialPhrase(pin.canvas_x, pin.canvas_y, cw, ch);
-          return `• ${subject.toUpperCase()} — clearly visible ${pos}`;
-        })
-        .join("\n");
+      // Multiple pins — give each landmark a numbered "inventory" entry.
+      // Flux respects numbered lists far better than bullet blobs and is less
+      // likely to skip a subject when the count and a closing checklist agree.
+      const count = pins.length;
+      const ordinals = ["ONE", "TWO", "THREE", "FOUR", "FIVE", "SIX", "SEVEN", "EIGHT"];
+      const countWord = ordinals[count - 1] ?? String(count);
+
+      const entries = pins.map((pin, i) => {
+        const subject = locationSubject(pin.label, pin.description);
+        const pos = spatialPhrase(pin.canvas_x, pin.canvas_y, cw, ch);
+        // Give each landmark a clean visual description and explicit placement
+        return `Landmark ${i + 1}: ${subject.toUpperCase()} — ${pos}.`;
+      });
+
+      // Short closing checklist repeats subjects so the model "confirms" each
+      const checklist = pins
+        .map((pin, i) => `${i + 1}) ${pin.label.toUpperCase()} ✓`)
+        .join("  ");
 
       sceneBody =
-        `A single sweeping ${genreWord} panoramic landscape that contains ALL of ` +
-        `the following landmarks simultaneously, each placed exactly where described:\n` +
-        landmarkLines + `\n` +
-        `Composition: ultra-wide establishing shot so every landmark fits in one frame. ` +
-        `Each landmark has a unique silhouette, distinct materials, and its own ` +
-        `lighting contribution to the overall scene (e.g. volcanic glow, cave shadow, ` +
-        `forest canopy light). ` +
-        `The landmarks interact believably — a volcano's ash clouds drift toward ` +
-        `distant features, cave shadows pool in the foreground, etc. ` +
-        `Dramatic sky, atmospheric depth haze, matte-painting quality.`;
+        `A single ultra-wide panoramic ${genreWord} establishing shot containing ` +
+        `EXACTLY ${countWord} (${count}) clearly distinct landmarks. ` +
+        `Every landmark listed below MUST appear in the final image — do not omit any:\n` +
+        entries.join("\n") + "\n" +
+        `All ${count} landmarks occupy their stated positions and are simultaneously ` +
+        `visible in one wide frame. Each landmark has a completely unique silhouette, ` +
+        `material palette, and lighting so none can be confused with another. ` +
+        `Composition checklist — all must be present: ${checklist}. ` +
+        `Dramatic ${genreWord} sky, volumetric atmosphere, matte-painting quality.`;
     }
 
     const prompt =
