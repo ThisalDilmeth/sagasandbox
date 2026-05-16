@@ -458,11 +458,6 @@ export const GeographyCanvas = forwardRef<
               };
               void (async () => {
                 try {
-                  const stage = stageRef.current;
-                  const sketchDataurl = stage
-                    ? stage.toDataURL({ pixelRatio: 1 })
-                    : undefined;
-
                   const pinRefs = pins.map((p) => ({
                     label: p.label,
                     description: p.description,
@@ -476,7 +471,6 @@ export const GeographyCanvas = forwardRef<
                       method: "POST",
                       headers: { "Content-Type": "application/json" },
                       body: JSON.stringify({
-                        sketch_dataurl: sketchDataurl,
                         pins: pinRefs,
                         canvas_width: size.width,
                         canvas_height: size.height,

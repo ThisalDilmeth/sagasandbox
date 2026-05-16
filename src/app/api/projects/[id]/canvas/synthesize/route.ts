@@ -2,12 +2,6 @@ import { NextResponse } from "next/server";
 import { jsonError } from "@/lib/api-auth";
 import { getProject, updateProject } from "@/lib/local-store";
 import { falSubscribeImage, projectStyleConfig } from "@/lib/fal";
-import { falDepthMap } from "@/lib/fal-media";
-import { fal } from "@fal-ai/client";
-
-if (process.env.FAL_KEY) {
-  fal.config({ credentials: process.env.FAL_KEY });
-}
 
 type RouteContext = { params: Promise<{ id: string }> };
 
@@ -18,30 +12,64 @@ interface PinRef {
   canvas_y: number;
 }
 
-function spatialPosition(
-  x: number,
-  y: number,
-  cw: number,
-  ch: number,
-): string {
+/**
+ * Translates a canvas-space (x, y) coordinate into rich spatial language that
+ * Flux can honour when composing the scene.
+ */
+function spatialPhrase(x: number, y: number, cw: number, ch: number): string {
   const xPct = x / cw;
   const yPct = y / ch;
-  const h = xPct < 0.33 ? "left" : xPct > 0.67 ? "right" : "center";
-  const v = yPct < 0.33 ? "top" : yPct > 0.67 ? "bottom" : "middle";
-  if (v === "middle" && h === "center") return "center";
-  if (v === "middle") return h;
-  if (h === "center") return v;
-  return `${v}-${h}`;
+
+  const h =
+    xPct < 0.25
+      ? "far left"
+      : xPct < 0.42
+        ? "left side"
+        : xPct < 0.58
+          ? "center"
+          : xPct < 0.75
+            ? "right side"
+            : "far right";
+
+  const v =
+    yPct < 0.25
+      ? "upper"
+      : yPct < 0.42
+        ? "upper-middle"
+        : yPct < 0.58
+          ? "middle"
+          : yPct < 0.75
+            ? "lower-middle"
+            : "lower foreground";
+
+  if (v === "middle" && h === "center") return "in the center of the image";
+  if (v === "middle") return `on the ${h} of the image`;
+  if (h === "center") return `in the ${v} center of the image`;
+  return `in the ${v} ${h} of the image`;
+}
+
+/**
+ * Builds a visual description of a location from its label and optional
+ * description text. The result is a concrete visual subject phrase — e.g.
+ * "an erupting volcano with flowing lava" — not a UI annotation.
+ */
+function locationSubject(label: string, description?: string | null): string {
+  const base = label.trim();
+  if (description?.trim()) {
+    return `${base} — ${description.trim()}`;
+  }
+  return base;
 }
 
 export async function POST(request: Request, context: RouteContext) {
   const { id: projectId } = await context.params;
   try {
     const body = (await request.json()) as {
-      sketch_dataurl?: string;
       pins?: PinRef[];
       canvas_width?: number;
       canvas_height?: number;
+      // sketch_dataurl intentionally ignored: we generate from text so the
+      // output shows what the pins MEAN, not what the UI circles look like.
     };
 
     const project = await getProject(projectId);
@@ -53,91 +81,84 @@ export async function POST(request: Request, context: RouteContext) {
     const cw = body.canvas_width ?? 1280;
     const ch = body.canvas_height ?? 720;
 
-    // ── Derive a rich style clause from the project configuration ─────────────
+    // ── Build style clause ────────────────────────────────────────────────────
     const styleParts: string[] = [];
     if (styleConfig.aesthetic_style) styleParts.push(styleConfig.aesthetic_style);
     if (styleConfig.aesthetic && styleConfig.aesthetic !== styleConfig.aesthetic_style)
       styleParts.push(styleConfig.aesthetic);
-    if (styleConfig.theme) styleParts.push(`${styleConfig.theme.replace(/_/g, " ")} setting`);
+    if (styleConfig.theme) styleParts.push(styleConfig.theme.replace(/_/g, " "));
     if (styleConfig.tone) styleParts.push(styleConfig.tone);
     const styleClause = styleParts.length ? styleParts.join(", ") : "cinematic fantasy";
-    const genreWord = styleConfig.theme?.replace(/_/g, " ") ?? "cinematic";
+    const genreWord = styleConfig.theme?.replace(/_/g, " ") ?? "fantasy";
 
-    // ── Build location descriptions from pin content and spatial position ─────
+    // ── Build scene from pin content (label + description = the visual subject) ─
     const pins = body.pins ?? [];
 
-    let sceneDesc: string;
+    let sceneBody: string;
 
     if (pins.length === 0) {
-      sceneDesc =
-        "sweeping wide-angle establishing shot, dramatic atmospheric lighting, " +
-        "rich foreground-to-horizon environmental depth, volumetric fog or haze, " +
-        "highly detailed architecture and landscape, matte-painting quality";
+      // No pins — generate a rich establishing shot for the world
+      sceneBody =
+        `A sweeping ${genreWord} landscape, wide-angle establishing shot. ` +
+        `Dramatic atmospheric lighting, volumetric fog, rich environmental detail ` +
+        `from foreground to the horizon. Matte-painting quality, highly detailed.`;
+    } else if (pins.length === 1) {
+      const pin = pins[0];
+      const subject = locationSubject(pin.label, pin.description);
+      const pos = spatialPhrase(pin.canvas_x, pin.canvas_y, cw, ch);
+      sceneBody =
+        `A dramatic ${genreWord} landscape scene dominated by ${subject}, ` +
+        `prominently placed ${pos}. ` +
+        `Wide-angle view showing the full environment surrounding this landmark. ` +
+        `Dramatic atmospheric lighting, volumetric haze, richly detailed textures. ` +
+        `Cinematic establishing shot.`;
     } else {
-      const locationDescs = pins.map((pin) => {
-        const pos = spatialPosition(pin.canvas_x, pin.canvas_y, cw, ch);
-        const xPct = Math.round((pin.canvas_x / cw) * 100);
-        const yPct = Math.round((pin.canvas_y / ch) * 100);
-        const detail = pin.description?.trim()
-          ? `${pin.label} (${pin.description.trim()})`
-          : pin.label;
-        return `[${pos} — ${xPct}% across, ${yPct}% down] ${detail}`;
-      });
+      // Multiple pins — compose a panorama where every pin is a distinct visual landmark.
+      const landmarkLines = pins
+        .map((pin) => {
+          const subject = locationSubject(pin.label, pin.description);
+          const pos = spatialPhrase(pin.canvas_x, pin.canvas_y, cw, ch);
+          return `• ${subject.toUpperCase()} — clearly visible ${pos}`;
+        })
+        .join("\n");
 
-      sceneDesc =
-        `A single vast panoramic ${genreWord} landscape with ALL of the following clearly visible landmarks ` +
-        `rendered at their indicated positions: ${locationDescs.join(" | ")}. ` +
-        `Composition rule: ultra-wide establishing shot so every landmark fits in frame simultaneously. ` +
-        `Each landmark is a distinct, recognisable architectural or geographic feature with unique ` +
-        `silhouette and lighting. ` +
-        `Dramatic volumetric lighting, atmospheric depth haze, highly detailed textures on every surface. ` +
-        `Golden-hour or moonlit sky casting long shadows that reinforce the ${genreWord} mood.`;
+      sceneBody =
+        `A single sweeping ${genreWord} panoramic landscape that contains ALL of ` +
+        `the following landmarks simultaneously, each placed exactly where described:\n` +
+        landmarkLines + `\n` +
+        `Composition: ultra-wide establishing shot so every landmark fits in one frame. ` +
+        `Each landmark has a unique silhouette, distinct materials, and its own ` +
+        `lighting contribution to the overall scene (e.g. volcanic glow, cave shadow, ` +
+        `forest canopy light). ` +
+        `The landmarks interact believably — a volcano's ash clouds drift toward ` +
+        `distant features, cave shadows pool in the foreground, etc. ` +
+        `Dramatic sky, atmospheric depth haze, matte-painting quality.`;
     }
 
     const prompt =
-      `${styleClause}. ${sceneDesc}. ` +
-      `Masterpiece-quality environment art, 8K ultra-detailed, rich colour grading, ` +
-      `no people in frame, no text overlays, no UI elements — pure cinematic world backdrop.`;
+      `${styleClause}. ${sceneBody} ` +
+      `Masterpiece quality, 8K render, hyper-detailed environments, ` +
+      `no human figures, no text, no UI markers — pure world backdrop.`;
 
-    // ── Upload sketch to fal storage for img2img ─────────────────────────────
-    let sketchCdnUrl: string | undefined;
-    if (body.sketch_dataurl && process.env.FAL_KEY) {
-      try {
-        const base64 = body.sketch_dataurl.replace(/^data:image\/\w+;base64,/, "");
-        const buffer = Buffer.from(base64, "base64");
-        const blob = new Blob([buffer], { type: "image/png" });
-        sketchCdnUrl = await fal.storage.upload(blob);
-      } catch (err) {
-        console.warn("Sketch upload failed, using text-to-image fallback", err);
-      }
-    }
-
-    const [imageUrl, depthPreviewUrl] = await Promise.all([
-      falSubscribeImage({
-        prompt,
-        model: sketchCdnUrl ? "fal-ai/flux/dev/image-to-image" : "fal-ai/flux/dev",
-        imageUrl: sketchCdnUrl,
-        width: 1280,
-        height: 720,
-      }),
-      sketchCdnUrl ? falDepthMap(sketchCdnUrl) : Promise.resolve(null),
-    ]);
+    // ── Always use text-to-image: Flux generates the world from the prompt ────
+    const imageUrl = await falSubscribeImage({
+      prompt,
+      model: "fal-ai/flux/dev",
+      width: 1280,
+      height: 720,
+    });
 
     const canvasState = {
       ...(typeof project.canvas_state === "object" && project.canvas_state !== null
         ? project.canvas_state
         : {}),
       scenery_preview_url: imageUrl ?? null,
-      depth_preview_url: depthPreviewUrl,
       last_synthesis_at: new Date().toISOString(),
     };
 
     await updateProject(projectId, { canvas_state: canvasState });
 
-    return NextResponse.json({
-      image_url: imageUrl ?? null,
-      depth_preview_url: depthPreviewUrl,
-    });
+    return NextResponse.json({ image_url: imageUrl ?? null });
   } catch (err) {
     return jsonError(err instanceof Error ? err.message : "Unknown error");
   }
