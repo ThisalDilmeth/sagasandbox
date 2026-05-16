@@ -471,11 +471,16 @@ export const GeographyCanvas = forwardRef<
               };
               void (async () => {
                 try {
+                  // Convert each pin from world-space coordinates to screen-space
+                  // (image-relative) coordinates so they align with the captured
+                  // viewport. Formula: screen = world * scale + stagePos
+                  // This ensures positions are correct even when the canvas is
+                  // zoomed or panned from the default view.
                   const pinRefs = pins.map((p) => ({
                     label: p.label,
                     description: p.description,
-                    canvas_x: p.canvas_x,
-                    canvas_y: p.canvas_y,
+                    canvas_x: p.canvas_x * scale + stagePos.x,
+                    canvas_y: p.canvas_y * scale + stagePos.y,
                   }));
 
                   const res = await fetch(
