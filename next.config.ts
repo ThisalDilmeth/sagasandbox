@@ -9,10 +9,11 @@ const nextConfig: NextConfig = {
         hostname: "*.supabase.co",
         pathname: "/storage/v1/object/public/**",
       },
-      // fal.ai CDN — raw output URLs before webhook re-uploads to storage
+      // fal.ai CDN — raw output URLs (v3, v3b, and other regional subdomains)
       {
         protocol: "https",
-        hostname: "v3.fal.media",
+        hostname: "**.fal.media",
+        pathname: "/files/**",
       },
       {
         protocol: "https",

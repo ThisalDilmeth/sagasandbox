@@ -17,7 +17,7 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "SagaSandbox",
   description:
-    "Agentic multimodal storytelling canvas for world-building and narrative planning.",
+    "Timeline storytelling with per-card whiteboards, fal.ai scene images, and video export.",
 };
 
 export default function RootLayout({

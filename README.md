@@ -1,8 +1,17 @@
 # SagaSandbox
 
-Agentic multimodal storytelling canvas — collaborative world-building, timeline, and canvas workspace.
+Single-user **timeline storytelling**: ordered **cards**, a **per-card whiteboard** (sketch + text prompt), **fal.ai** scene images, and **full-timeline video export**.
 
 **Production:** https://sagasandbox.vercel.app
+
+## Product (simplified scope)
+
+1. Build a **timeline** of story beats as editable **cards**.
+2. **Click a card** to open its **whiteboard** — draw and describe the scenario with a text prompt.
+3. **Generate** a scene **image** per card via **fal.ai** (e.g. fal-ai/flux).
+4. **Export** the ordered timeline as one **video** (fal.ai video models or stitched stills).
+
+**Out of scope for this build:** authentication, multiplayer collaboration, Character Vault, Creative Copilot, global theme matrix, and version-history sidebar. See [`.cursor/rules/Project-Context.mdc`](.cursor/rules/Project-Context.mdc) for the full PRD-style description.
 
 ## Getting started
 
