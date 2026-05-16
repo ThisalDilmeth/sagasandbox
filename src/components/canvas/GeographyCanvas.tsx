@@ -11,7 +11,7 @@ import {
   type Dispatch,
   type SetStateAction,
 } from "react";
-import { Stage, Layer, Line, Circle, Text, Group } from "react-konva";
+import { Stage, Layer, Line, Circle, Text, Group, Image as KonvaImage } from "react-konva";
 import type Konva from "konva";
 import type { LocationPin } from "@/types/app";
 import { GEN_STATUS_COLORS } from "@/lib/constants";
@@ -22,6 +22,7 @@ import {
 import { parseKonvaCanvasState } from "@/lib/canvas-state";
 import { cn } from "@/lib/cn";
 import { PinCreator } from "./PinCreator";
+import { toastError } from "@/store/toast-store";
 
 export type CanvasTool = "brush" | "pan";
 
@@ -101,6 +102,9 @@ export const GeographyCanvas = forwardRef<
     x: number;
     y: number;
   } | null>(null);
+  const [sceneryImageUrl, setSceneryImageUrl] = useState<string | null>(null);
+  const [sceneryImage, setSceneryImage] = useState<HTMLImageElement | null>(null);
+  const [synthesizing, setSynthesizing] = useState(false);
 
   const hydrateFromState = useCallback(
     (state: Record<string, unknown> | null | undefined) => {
@@ -175,7 +179,26 @@ export const GeographyCanvas = forwardRef<
     if (hydratedStateKeyRef.current === stateKey) return;
     hydratedStateKeyRef.current = stateKey;
     hydrateFromState(initialCanvasState);
+    // Restore previously synthesized scenery
+    const url =
+      typeof initialCanvasState?.scenery_preview_url === "string"
+        ? initialCanvasState.scenery_preview_url
+        : null;
+    if (url) setSceneryImageUrl(url);
   }, [initialCanvasState, hydrateFromState]);
+
+  // Load HTMLImageElement whenever the URL changes so Konva can render it
+  useEffect(() => {
+    if (!sceneryImageUrl) {
+      setSceneryImage(null);
+      return;
+    }
+    const img = new window.Image();
+    img.crossOrigin = "anonymous";
+    img.src = sceneryImageUrl;
+    img.onload = () => setSceneryImage(img);
+    img.onerror = () => setSceneryImage(null);
+  }, [sceneryImageUrl]);
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -368,19 +391,47 @@ export const GeographyCanvas = forwardRef<
         {apiAvailable ? (
           <button
             type="button"
+            disabled={synthesizing}
             onClick={() => {
-              void fetch(`/api/projects/${projectId}/canvas/synthesize`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  sketch_description:
-                    "Living canvas: enhance brush strokes into cinematic scenery",
-                }),
-              });
+              setSynthesizing(true);
+              void (async () => {
+                try {
+                  const res = await fetch(
+                    `/api/projects/${projectId}/canvas/synthesize`,
+                    {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({
+                        sketch_description:
+                          "Living canvas: enhance brush strokes into cinematic scenery",
+                      }),
+                    },
+                  );
+                  if (!res.ok) {
+                    const body = (await res.json()) as { error?: string };
+                    throw new Error(body.error ?? "Synthesis failed");
+                  }
+                  const data = (await res.json()) as { image_url?: string | null };
+                  if (data.image_url) {
+                    setSceneryImageUrl(data.image_url);
+                  } else {
+                    toastError("Synthesis returned no image — check FAL_KEY");
+                  }
+                } catch (err) {
+                  toastError(err instanceof Error ? err.message : "Synthesis failed");
+                } finally {
+                  setSynthesizing(false);
+                }
+              })();
             }}
-            className="rounded-md px-3 py-1.5 text-xs font-medium text-[#a78bfa] hover:bg-[#7c3aed]/20"
+            className={cn(
+              "rounded-md px-3 py-1.5 text-xs font-medium",
+              synthesizing
+                ? "cursor-wait text-[#9ca3af]"
+                : "text-[#a78bfa] hover:bg-[#7c3aed]/20",
+            )}
           >
-            Synthesize scenery
+            {synthesizing ? "Synthesizing…" : "Synthesize scenery"}
           </button>
         ) : null}
       </div>
@@ -428,6 +479,19 @@ export const GeographyCanvas = forwardRef<
         }}
         className="cursor-crosshair"
       >
+        {/* Scenery background — below sketch lines */}
+        {sceneryImage ? (
+          <Layer listening={false}>
+            <KonvaImage
+              image={sceneryImage}
+              x={-stagePos.x / scale}
+              y={-stagePos.y / scale}
+              width={size.width / scale}
+              height={size.height / scale}
+              opacity={0.85}
+            />
+          </Layer>
+        ) : null}
         <Layer>
           {lines.map((line) => (
             <Line
