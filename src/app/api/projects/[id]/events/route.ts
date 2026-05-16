@@ -1,35 +1,32 @@
 import { NextResponse } from "next/server";
-import { isAuthError, jsonError, requireAuth } from "@/lib/api-auth";
-import { buildPrompt, falQueue, projectStyleConfig } from "@/lib/fal";
-import type { SupabaseClient } from "@supabase/supabase-js";
-import type { Database } from "@/types/db";
+import { jsonError } from "@/lib/api-auth";
+import {
+  getProject,
+  listEvents,
+  createEvent,
+  updateEvent,
+  listCharacters,
+  getPin,
+} from "@/lib/local-store";
+import { falSubscribeImage, buildPrompt, projectStyleConfig } from "@/lib/fal";
 import type { VisualTraits } from "@/types/app";
 
 type RouteContext = { params: Promise<{ id: string }> };
 
-async function triggerEventGeneration(
-  supabase: SupabaseClient<Database>,
+async function generateEventImage(
   projectId: string,
   event: { id: string; description: string | null; title: string; pin_id: string | null },
 ) {
-  const { data: project } = await supabase
-    .from("projects")
-    .select("*")
-    .eq("id", projectId)
-    .single();
-
+  const [project, characters] = await Promise.all([
+    getProject(projectId),
+    listCharacters(projectId),
+  ]);
   if (!project) return;
 
-  const { data: characters } = await supabase
-    .from("characters")
-    .select("*")
-    .eq("project_id", projectId);
-
   const description = event.description ?? event.title;
-  const matched = (characters ?? []).filter((c) =>
+  const matched = characters.filter((c) =>
     description.toLowerCase().includes(c.name.toLowerCase()),
   );
-
   const characterLines = matched.map((c) => {
     const traits = (c.visual_traits ?? {}) as VisualTraits;
     return [c.name, traits.hair, traits.build, traits.clothing, traits.features]
@@ -41,18 +38,12 @@ async function triggerEventGeneration(
   let imageUrl: string | undefined;
 
   if (event.pin_id) {
-    const { data: pin } = await supabase
-      .from("location_pins")
-      .select("generated_image_url")
-      .eq("id", event.pin_id)
-      .single();
+    const pin = await getPin(projectId, event.pin_id);
     if (pin?.generated_image_url) imageUrl = pin.generated_image_url;
   }
 
   const refChar = matched.find((c) => c.reference_image_url);
-  if (refChar?.reference_image_url) {
-    imageUrl = refChar.reference_image_url;
-  }
+  if (refChar?.reference_image_url) imageUrl = refChar.reference_image_url;
 
   const prompt = buildPrompt({
     styleConfig,
@@ -60,50 +51,25 @@ async function triggerEventGeneration(
     characters: characterLines.length ? characterLines : undefined,
   });
 
-  const result = await falQueue({
-    prompt,
-    model: "fal-ai/flux/dev",
-    imageUrl,
+  const resultUrl = await falSubscribeImage({ prompt, model: "fal-ai/flux/dev", imageUrl });
+  await updateEvent(projectId, event.id, {
+    generated_image_url: resultUrl ?? null,
+    gen_status: resultUrl ? "done" : "error",
   });
-
-  if (result) {
-    await supabase
-      .from("timeline_events")
-      .update({
-        gen_status: "generating",
-        fal_request_id: result.requestId,
-      })
-      .eq("id", event.id);
-  }
 }
 
 export async function GET(_request: Request, context: RouteContext) {
-  const auth = await requireAuth();
-  if (isAuthError(auth)) return auth;
-  const { supabase } = auth;
   const { id } = await context.params;
-
   try {
-    const { data: events, error } = await supabase
-      .from("timeline_events")
-      .select("*")
-      .eq("project_id", id)
-      .order("sequence_order", { ascending: true });
-
-    if (error) return jsonError(error.message);
-
-    return NextResponse.json({ events: events ?? [] });
+    const events = await listEvents(id);
+    return NextResponse.json({ events });
   } catch (err) {
     return jsonError(err instanceof Error ? err.message : "Unknown error");
   }
 }
 
 export async function POST(request: Request, context: RouteContext) {
-  const auth = await requireAuth();
-  if (isAuthError(auth)) return auth;
-  const { supabase } = auth;
   const { id: projectId } = await context.params;
-
   try {
     const body = (await request.json()) as {
       title: string;
@@ -121,34 +87,26 @@ export async function POST(request: Request, context: RouteContext) {
       );
     }
 
-    const { data: event, error } = await supabase
-      .from("timeline_events")
-      .insert({
-        project_id: projectId,
-        title: body.title,
-        description: body.description ?? null,
-        sequence_order: body.sequence_order,
-        pin_id: body.pin_id ?? null,
-        in_world_time: body.in_world_time ?? null,
-        is_ghost: body.is_ghost ?? false,
-        gen_status: "pending",
-      })
-      .select()
-      .single();
+    const event = await createEvent(projectId, {
+      pin_id: body.pin_id ?? null,
+      title: body.title,
+      description: body.description ?? null,
+      sequence_order: body.sequence_order,
+      in_world_time: body.in_world_time ?? null,
+      is_ghost: body.is_ghost ?? false,
+      gen_status: "generating",
+      generated_image_url: null,
+      audio_url: null,
+      fal_request_id: null,
+      audio_summary: null,
+    });
 
-    if (error || !event) return jsonError(error?.message ?? "Insert failed");
+    // Generate image in background
+    void generateEventImage(projectId, event).catch(() => {
+      void updateEvent(projectId, event.id, { gen_status: "error" });
+    });
 
-    try {
-      await triggerEventGeneration(supabase, projectId, event);
-      const { data: updated } = await supabase
-        .from("timeline_events")
-        .select("*")
-        .eq("id", event.id)
-        .single();
-      return NextResponse.json({ event: updated ?? event }, { status: 201 });
-    } catch {
-      return NextResponse.json({ event }, { status: 201 });
-    }
+    return NextResponse.json({ event }, { status: 201 });
   } catch (err) {
     return jsonError(err instanceof Error ? err.message : "Unknown error");
   }

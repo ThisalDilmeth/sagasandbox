@@ -43,4 +43,4 @@ supabase/.temp/
 
 # typescript
 *.tsbuildinfo
-next-env.d.ts
+next-env.d.ts.data/

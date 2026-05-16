@@ -1,15 +1,12 @@
 import { NextResponse } from "next/server";
-import { isAuthError, jsonError, requireAuth } from "@/lib/api-auth";
-import { falQueue, projectStyleConfig } from "@/lib/fal";
+import { jsonError } from "@/lib/api-auth";
+import { getProject, createPin, updatePin } from "@/lib/local-store";
+import { falSubscribeImage, buildPrompt, projectStyleConfig } from "@/lib/fal";
 
 type RouteContext = { params: Promise<{ id: string }> };
 
 export async function POST(request: Request, context: RouteContext) {
-  const auth = await requireAuth();
-  if (isAuthError(auth)) return auth;
-  const { supabase } = auth;
   const { id: projectId } = await context.params;
-
   try {
     const body = (await request.json()) as {
       label: string;
@@ -25,52 +22,38 @@ export async function POST(request: Request, context: RouteContext) {
       );
     }
 
-    const { data: project, error: projectError } = await supabase
-      .from("projects")
-      .select("*")
-      .eq("id", projectId)
-      .single();
-
-    if (projectError || !project) {
+    const project = await getProject(projectId);
+    if (!project) {
       return NextResponse.json({ error: "Project not found" }, { status: 404 });
     }
 
-    const { data: pin, error: insertError } = await supabase
-      .from("location_pins")
-      .insert({
-        project_id: projectId,
-        label: body.label,
-        description: body.description ?? null,
-        canvas_x: body.canvas_x,
-        canvas_y: body.canvas_y,
-        gen_status: "pending",
-      })
-      .select()
-      .single();
+    const pin = await createPin(projectId, {
+      label: body.label,
+      description: body.description ?? null,
+      canvas_x: body.canvas_x,
+      canvas_y: body.canvas_y,
+      gen_status: "generating",
+      generated_image_url: null,
+      fal_request_id: null,
+    });
 
-    if (insertError || !pin) return jsonError(insertError?.message ?? "Insert failed");
-
-    const styleConfig = projectStyleConfig(project);
-    const prompt = `${styleConfig.aesthetic_style} ${styleConfig.tone} location: ${body.label}. ${body.description ?? ""}`;
-
-    try {
-      const result = await falQueue({ prompt, model: "fal-ai/flux/dev" });
-      if (result) {
-        const { data: updated } = await supabase
-          .from("location_pins")
-          .update({
-            gen_status: "generating",
-            fal_request_id: result.requestId,
-          })
-          .eq("id", pin.id)
-          .select()
-          .single();
-
-        return NextResponse.json({ pin: updated ?? pin }, { status: 201 });
+    // Kick off image generation synchronously (non-blocking from client's view — we stream back early)
+    void (async () => {
+      try {
+        const styleConfig = projectStyleConfig(project);
+        const prompt = buildPrompt({
+          styleConfig,
+          description: `location: ${body.label}. ${body.description ?? ""}`,
+        });
+        const imageUrl = await falSubscribeImage({ prompt, model: "fal-ai/flux/dev" });
+        await updatePin(projectId, pin.id, {
+          generated_image_url: imageUrl ?? null,
+          gen_status: imageUrl ? "done" : "error",
+        });
+      } catch {
+        await updatePin(projectId, pin.id, { gen_status: "error" });
       }
-    } catch {
-      // Return pin without generation if fal fails
-    }
+    })();
 
     return NextResponse.json({ pin }, { status: 201 });
   } catch (err) {

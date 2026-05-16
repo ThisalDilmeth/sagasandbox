@@ -1,15 +1,19 @@
 import { NextResponse } from "next/server";
 import { openai } from "@ai-sdk/openai";
 import { streamText } from "ai";
-import { isAuthError, jsonError, requireAuth } from "@/lib/api-auth";
-import { captureProjectSnapshot } from "@/lib/snapshots";
+import { jsonError } from "@/lib/api-auth";
+import {
+  getProject,
+  listPins,
+  listEvents,
+  listCharacters,
+  createEvent,
+  updateEvent,
+} from "@/lib/local-store";
 
 type RouteContext = { params: Promise<{ id: string }> };
 
 export async function POST(request: Request, context: RouteContext) {
-  const auth = await requireAuth();
-  if (isAuthError(auth)) return auth;
-  const { supabase } = auth;
   const { id: projectId } = await context.params;
 
   if (!process.env.OPENAI_API_KEY) {
@@ -29,17 +33,12 @@ export async function POST(request: Request, context: RouteContext) {
       return NextResponse.json({ error: "message is required" }, { status: 400 });
     }
 
-    const [{ data: project }, { data: pins }, { data: events }, { data: characters }] =
-      await Promise.all([
-        supabase.from("projects").select("*").eq("id", projectId).single(),
-        supabase.from("location_pins").select("*").eq("project_id", projectId),
-        supabase
-          .from("timeline_events")
-          .select("*")
-          .eq("project_id", projectId)
-          .order("sequence_order"),
-        supabase.from("characters").select("*").eq("project_id", projectId),
-      ]);
+    const [project, pins, events, characters] = await Promise.all([
+      getProject(projectId),
+      listPins(projectId),
+      listEvents(projectId),
+      listCharacters(projectId),
+    ]);
 
     if (!project) {
       return NextResponse.json({ error: "Project not found" }, { status: 404 });
@@ -49,12 +48,8 @@ export async function POST(request: Request, context: RouteContext) {
       {
         theme: project.theme,
         aesthetic: project.aesthetic_style,
-        pins: (pins ?? []).map((p) => ({
-          id: p.id,
-          label: p.label,
-          description: p.description,
-        })),
-        events: (events ?? []).map((e) => ({
+        pins: pins.map((p) => ({ id: p.id, label: p.label, description: p.description })),
+        events: events.map((e) => ({
           id: e.id,
           title: e.title,
           description: e.description,
@@ -62,10 +57,7 @@ export async function POST(request: Request, context: RouteContext) {
           pin_id: e.pin_id,
           is_ghost: e.is_ghost,
         })),
-        characters: (characters ?? []).map((c) => ({
-          name: c.name,
-          description: c.description,
-        })),
+        characters: characters.map((c) => ({ name: c.name, description: c.description })),
       },
       null,
       2,
@@ -93,51 +85,28 @@ ${contextBlock}`,
           pin_id?: string | null;
         };
         const nextOrder =
-          (events ?? []).length > 0
-            ? Math.max(...(events ?? []).map((e) => e.sequence_order)) + 1
+          events.length > 0
+            ? Math.max(...events.map((e) => e.sequence_order)) + 1
             : 0;
 
-        const { data: ghost } = await supabase
-          .from("timeline_events")
-          .insert({
-            project_id: projectId,
-            title: payload.title,
-            description: payload.description ?? null,
-            pin_id: payload.pin_id ?? null,
-            sequence_order: nextOrder,
-            is_ghost: true,
-            gen_status: "pending",
-          })
-          .select()
-          .single();
-
-        if (ghost) {
-          const { data: pending } = await supabase
-            .from("copilot_pending_changes")
-            .insert({
-              project_id: projectId,
-              change_type: "add_event",
-              payload: { event_id: ghost.id },
-              status: "pending",
-            })
-            .select("id")
-            .single();
-          pendingId = pending?.id ?? null;
-        }
+        const ghost = await createEvent(projectId, {
+          title: payload.title,
+          description: payload.description ?? null,
+          pin_id: payload.pin_id ?? null,
+          sequence_order: nextOrder,
+          is_ghost: true,
+          gen_status: "pending",
+          generated_image_url: null,
+          audio_url: null,
+          fal_request_id: null,
+          audio_summary: null,
+          in_world_time: null,
+        });
+        pendingId = ghost.id;
       } catch {
         // ignore malformed proposal
       }
     }
-
-    const snapshotId = await captureProjectSnapshot(supabase, projectId, "Copilot query");
-
-    await supabase.from("agent_logs").insert({
-      project_id: projectId,
-      query: body.message,
-      response: text,
-      action_taken: Boolean(pendingId),
-      revert_reference_id: snapshotId,
-    });
 
     return NextResponse.json({
       response: text.replace(/PROPOSE_EVENT:[\s\S]*$/, "").trim(),

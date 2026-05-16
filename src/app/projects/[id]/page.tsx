@@ -1,15 +1,11 @@
 import { notFound } from "next/navigation"
-
 import { WorkspaceClient } from "./WorkspaceClient"
 import {
-  DEMO_PROJECT_ID,
-  getMockCharacters,
-  getMockEvents,
-  getMockPins,
-  getMockProject,
-} from "@/lib/mock-workspace"
-import { isSupabaseConfigured } from "@/lib/supabase-env"
-import { createClient } from "@/lib/supabase-server"
+  getProject,
+  listPins,
+  listEvents,
+  listCharacters,
+} from "@/lib/local-store"
 
 interface ProjectPageProps {
   params: Promise<{ id: string }>
@@ -18,64 +14,25 @@ interface ProjectPageProps {
 export default async function ProjectPage({ params }: ProjectPageProps) {
   const { id } = await params
 
-  if (!isSupabaseConfigured() || id === DEMO_PROJECT_ID) {
-    return (
-      <WorkspaceClient
-        project={getMockProject(id)}
-        initialPins={getMockPins(id)}
-        initialEvents={getMockEvents(id)}
-        initialCharacters={getMockCharacters(id)}
-        initialCanvasState={
-          getMockProject(id).canvas_state as Record<string, unknown>
-        }
-        apiAvailable={false}
-      />
-    )
-  }
+  const [project, pins, events, characters] = await Promise.all([
+    getProject(id),
+    listPins(id),
+    listEvents(id),
+    listCharacters(id),
+  ])
 
-  const supabase = await createClient()
-
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
-
-  const { data: project, error: projectError } = await supabase
-    .from("projects")
-    .select("*")
-    .eq("id", id)
-    .single()
-
-  if (projectError || !project) {
+  if (!project) {
     notFound()
   }
-
-  const [{ data: pins }, { data: events }, { data: characters }] =
-    await Promise.all([
-      supabase
-        .from("location_pins")
-        .select("*")
-        .eq("project_id", id)
-        .order("created_at", { ascending: true }),
-      supabase
-        .from("timeline_events")
-        .select("*")
-        .eq("project_id", id)
-        .order("sequence_order", { ascending: true }),
-      supabase
-        .from("characters")
-        .select("*")
-        .eq("project_id", id)
-        .order("created_at", { ascending: true }),
-    ])
 
   return (
     <WorkspaceClient
       project={project}
-      initialPins={pins ?? []}
-      initialEvents={events ?? []}
-      initialCharacters={characters ?? []}
+      initialPins={pins}
+      initialEvents={events}
+      initialCharacters={characters}
       initialCanvasState={project.canvas_state as Record<string, unknown>}
-      userId={user?.id}
+      apiAvailable={true}
     />
   )
 }

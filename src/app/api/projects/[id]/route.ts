@@ -1,30 +1,25 @@
 import { NextResponse } from "next/server";
-import { isAuthError, jsonError, requireAuth } from "@/lib/api-auth";
-import { falQueue, projectStyleConfig } from "@/lib/fal";
-import { captureProjectSnapshot } from "@/lib/snapshots";
-import type { Database, Json } from "@/types/db";
-
-type ProjectUpdate = Database["public"]["Tables"]["projects"]["Update"];
+import { jsonError } from "@/lib/api-auth";
+import {
+  getProject,
+  updateProject,
+  deleteProject,
+  listPins,
+  updatePin,
+  listEvents,
+  updateEvent,
+} from "@/lib/local-store";
+import { falSubscribeImage, buildPrompt, projectStyleConfig } from "@/lib/fal";
 
 type RouteContext = { params: Promise<{ id: string }> };
 
 export async function GET(_request: Request, context: RouteContext) {
-  const auth = await requireAuth();
-  if (isAuthError(auth)) return auth;
-  const { supabase } = auth;
   const { id } = await context.params;
-
   try {
-    const { data: project, error } = await supabase
-      .from("projects")
-      .select("*")
-      .eq("id", id)
-      .single();
-
-    if (error || !project) {
+    const project = await getProject(id);
+    if (!project) {
       return NextResponse.json({ error: "Project not found" }, { status: 404 });
     }
-
     return NextResponse.json({ project });
   } catch (err) {
     return jsonError(err instanceof Error ? err.message : "Unknown error");
@@ -32,13 +27,10 @@ export async function GET(_request: Request, context: RouteContext) {
 }
 
 export async function PATCH(request: Request, context: RouteContext) {
-  const auth = await requireAuth();
-  if (isAuthError(auth)) return auth;
-  const { supabase } = auth;
   const { id } = await context.params;
-
   try {
     const body = (await request.json()) as {
+      name?: string;
       theme?: string;
       aesthetic_style?: string;
       style_config?: Record<string, unknown>;
@@ -46,95 +38,80 @@ export async function PATCH(request: Request, context: RouteContext) {
       cascade?: boolean;
     };
 
-    const updates: ProjectUpdate = {};
-    if (body.theme !== undefined) updates.theme = body.theme;
-    if (body.aesthetic_style !== undefined)
-      updates.aesthetic_style = body.aesthetic_style;
-    if (body.style_config !== undefined) updates.style_config = body.style_config as Json;
-    if (body.canvas_state !== undefined) updates.canvas_state = body.canvas_state as Json;
+    const project = await updateProject(id, {
+      ...(body.name !== undefined ? { name: body.name } : {}),
+      ...(body.theme !== undefined ? { theme: body.theme } : {}),
+      ...(body.aesthetic_style !== undefined ? { aesthetic_style: body.aesthetic_style } : {}),
+      ...(body.style_config !== undefined ? { style_config: body.style_config } : {}),
+      ...(body.canvas_state !== undefined ? { canvas_state: body.canvas_state } : {}),
+    });
 
-    const { data: project, error } = await supabase
-      .from("projects")
-      .update(updates)
-      .eq("id", id)
-      .select()
-      .single();
-
-    if (error || !project) {
+    if (!project) {
       return NextResponse.json({ error: "Project not found" }, { status: 404 });
     }
-
-    await captureProjectSnapshot(
-      supabase,
-      id,
-      body.cascade ? "Theme cascade" : "Project settings update",
-    );
 
     let queued = 0;
 
     if (body.cascade) {
       const styleConfig = projectStyleConfig(project);
+      const [pins, events] = await Promise.all([
+        listPins(id),
+        listEvents(id),
+      ]);
 
-      const { data: pins } = await supabase
-        .from("location_pins")
-        .select("*")
-        .eq("project_id", id);
-
-      const { data: events } = await supabase
-        .from("timeline_events")
-        .select("*")
-        .eq("project_id", id);
-
-      for (const pin of pins ?? []) {
-        await supabase
-          .from("location_pins")
-          .update({ gen_status: "pending" })
-          .eq("id", pin.id);
-
-        try {
-          const prompt = `${styleConfig.aesthetic_style} ${styleConfig.theme} location: ${pin.label}. ${pin.description ?? ""}`;
-          const result = await falQueue({ prompt });
-          if (result) {
-            await supabase
-              .from("location_pins")
-              .update({
-                gen_status: "generating",
-                fal_request_id: result.requestId,
-              })
-              .eq("id", pin.id);
-            queued++;
+      await Promise.allSettled([
+        ...pins.map(async (pin) => {
+          try {
+            await updatePin(id, pin.id, { gen_status: "generating" });
+            const prompt = buildPrompt({
+              styleConfig,
+              description: `location: ${pin.label}. ${pin.description ?? ""}`,
+            });
+            const imageUrl = await falSubscribeImage({ prompt });
+            if (imageUrl) {
+              await updatePin(id, pin.id, {
+                generated_image_url: imageUrl,
+                gen_status: "done",
+              });
+              queued++;
+            }
+          } catch {
+            await updatePin(id, pin.id, { gen_status: "error" });
           }
-        } catch {
-          // fal may be unavailable during scaffold
-        }
-      }
-
-      for (const event of events ?? []) {
-        await supabase
-          .from("timeline_events")
-          .update({ gen_status: "pending" })
-          .eq("id", event.id);
-
-        try {
-          const prompt = `${styleConfig.aesthetic_style} scene: ${event.description ?? event.title}`;
-          const result = await falQueue({ prompt });
-          if (result) {
-            await supabase
-              .from("timeline_events")
-              .update({
-                gen_status: "generating",
-                fal_request_id: result.requestId,
-              })
-              .eq("id", event.id);
-            queued++;
+        }),
+        ...events.map(async (event) => {
+          try {
+            await updateEvent(id, event.id, { gen_status: "generating" });
+            const prompt = buildPrompt({
+              styleConfig,
+              description: `scene: ${event.description ?? event.title}`,
+            });
+            const imageUrl = await falSubscribeImage({ prompt });
+            if (imageUrl) {
+              await updateEvent(id, event.id, {
+                generated_image_url: imageUrl,
+                gen_status: "done",
+              });
+              queued++;
+            }
+          } catch {
+            await updateEvent(id, event.id, { gen_status: "error" });
           }
-        } catch {
-          // fal may be unavailable during scaffold
-        }
-      }
+        }),
+      ]);
     }
 
     return NextResponse.json({ project, queued: body.cascade ? queued : undefined });
+  } catch (err) {
+    return jsonError(err instanceof Error ? err.message : "Unknown error");
+  }
+}
+
+export async function DELETE(_request: Request, context: RouteContext) {
+  const { id } = await context.params;
+  try {
+    await deleteProject(id);
+    return NextResponse.json({ ok: true });
   } catch (err) {
     return jsonError(err instanceof Error ? err.message : "Unknown error");
   }

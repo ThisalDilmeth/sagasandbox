@@ -18,6 +18,7 @@ export interface FalQueueResult {
   requestId: string
 }
 
+/** Async queue submit (kept for backward compat — prefer falSubscribeImage for local mode). */
 export async function falQueue(
   options: FalQueueOptions,
 ): Promise<FalQueueResult | null> {
@@ -46,15 +47,43 @@ export async function falQueue(
     input.strength = 0.75
   }
 
-  const siteUrl = process.env.NEXT_PUBLIC_SITE_URL
-  const webhookUrl = siteUrl ? `${siteUrl}/api/webhooks/fal` : undefined
-
-  const { request_id } = await fal.queue.submit(model, {
-    input,
-    ...(webhookUrl ? { webhookUrl } : {}),
-  })
+  const { request_id } = await fal.queue.submit(model, { input })
 
   return { requestId: request_id }
+}
+
+/** Synchronous image generation — waits for fal to finish and returns the image URL. */
+export async function falSubscribeImage(
+  options: FalQueueOptions,
+): Promise<string | null> {
+  if (!process.env.FAL_KEY) {
+    console.warn("FAL_KEY not set — skipping image generation")
+    return null
+  }
+
+  const {
+    prompt,
+    model = "fal-ai/flux/dev",
+    imageUrl,
+    width = 1024,
+    height = 768,
+  } = options
+
+  const input: Record<string, unknown> = {
+    prompt,
+    image_size: { width, height },
+    num_inference_steps: 28,
+    guidance_scale: 3.5,
+  }
+
+  if (imageUrl) {
+    input.image_url = imageUrl
+    input.strength = 0.75
+  }
+
+  const result = await fal.subscribe(model, { input })
+  const data = result.data as { images?: Array<{ url: string }> }
+  return data.images?.[0]?.url ?? null
 }
 
 export function buildPrompt(parts: {

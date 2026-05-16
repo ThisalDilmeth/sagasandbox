@@ -32,20 +32,33 @@ export async function falDepthMap(imageUrl: string): Promise<string | null> {
   }
 }
 
+/** Synchronous video generation via fal-ai/luma-dream-machine. Returns video URL or null. */
+export async function falSubscribeVideo(options: {
+  prompt: string;
+  imageUrl?: string;
+}): Promise<string | null> {
+  if (!process.env.FAL_KEY) return null;
+  const model = "fal-ai/luma-dream-machine";
+  const input: Record<string, unknown> = { prompt: options.prompt };
+  if (options.imageUrl) input.image_url = options.imageUrl;
+
+  const result = await fal.subscribe(model, { input });
+  const data = result.data as {
+    video?: { url?: string };
+    videos?: Array<{ url?: string }>;
+  };
+  return data.video?.url ?? data.videos?.[0]?.url ?? null;
+}
+
 export async function falVideoQueue(options: {
   prompt: string;
   imageUrl?: string;
 }): Promise<{ requestId: string } | null> {
   if (!process.env.FAL_KEY) return null;
-  const siteUrl = process.env.NEXT_PUBLIC_SITE_URL;
-  const webhookUrl = siteUrl ? `${siteUrl}/api/webhooks/fal` : undefined;
   const model = "fal-ai/luma-dream-machine";
   const input: Record<string, unknown> = { prompt: options.prompt };
   if (options.imageUrl) input.image_url = options.imageUrl;
 
-  const { request_id } = await fal.queue.submit(model, {
-    input,
-    ...(webhookUrl ? { webhookUrl } : {}),
-  });
+  const { request_id } = await fal.queue.submit(model, { input });
   return { requestId: request_id };
 }

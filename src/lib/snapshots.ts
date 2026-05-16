@@ -1,46 +1,22 @@
-import type { SupabaseClient } from "@supabase/supabase-js";
-import type { Database } from "@/types/db";
+import { getProject, listPins, listEvents, listCharacters } from "@/lib/local-store"
 
+/** Captures a project snapshot locally — no-op in local mode (returns null). */
 export async function captureProjectSnapshot(
-  supabase: SupabaseClient<Database>,
-  projectId: string,
-  changeDescription?: string,
-) {
-  const [{ data: project }, { data: pins }, { data: events }, { data: characters }] =
-    await Promise.all([
-      supabase.from("projects").select("*").eq("id", projectId).single(),
-      supabase.from("location_pins").select("*").eq("project_id", projectId),
-      supabase
-        .from("timeline_events")
-        .select("*")
-        .eq("project_id", projectId)
-        .order("sequence_order"),
-      supabase.from("characters").select("*").eq("project_id", projectId),
-    ]);
+  _supabase: unknown,
+  _projectId: string,
+  _changeDescription?: string,
+): Promise<string | null> {
+  return null
+}
 
-  if (!project) return null;
-
-  const state_blob = {
-    project,
-    pins: pins ?? [],
-    events: events ?? [],
-    characters: characters ?? [],
-  };
-
-  const { data, error } = await supabase
-    .from("project_snapshots")
-    .insert({
-      project_id: projectId,
-      state_blob,
-      change_description: changeDescription ?? "Auto snapshot",
-    })
-    .select("id")
-    .single();
-
-  if (error) {
-    console.warn("snapshot capture failed", error.message);
-    return null;
-  }
-
-  return data.id;
+/** Captures a snapshot using local store (without a supabase client). */
+export async function captureLocalSnapshot(projectId: string) {
+  const [project, pins, events, characters] = await Promise.all([
+    getProject(projectId),
+    listPins(projectId),
+    listEvents(projectId),
+    listCharacters(projectId),
+  ])
+  if (!project) return null
+  return { project, pins, events, characters }
 }

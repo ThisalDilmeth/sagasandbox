@@ -24,14 +24,11 @@ import { useUIStore } from "@/store/ui-store";
 import { toastError } from "@/store/toast-store";
 import { History, Settings, Sparkles } from "lucide-react";
 import { themeAccent } from "@/lib/constants";
-import { DEMO_PROJECT_ID } from "@/lib/mock-workspace";
 import {
   isProjectApiAvailable,
   PROJECT_API_UNAVAILABLE_MESSAGE,
   readApiError,
 } from "@/lib/project-api";
-import { createClient } from "@/lib/supabase-client";
-import { isSupabaseConfigured } from "@/lib/supabase-env";
 import type {
   Character,
   Export,
@@ -95,7 +92,7 @@ export function WorkspaceClient({
   const persistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const apiAvailable =
     apiAvailableProp ?? isProjectApiAvailable(project.id);
-  const isDemo = project.id === DEMO_PROJECT_ID;
+  const isDemo = false;
 
   const {
     selectedPin,
@@ -112,16 +109,6 @@ export function WorkspaceClient({
     const id = requestAnimationFrame(() => setPanelsBooting(false));
     return () => cancelAnimationFrame(id);
   }, []);
-
-  useEffect(() => {
-    if (initialUserId) return;
-    if (!isSupabaseConfigured()) return;
-
-    const supabase = createClient();
-    void supabase.auth.getUser().then(({ data }) => {
-      if (data.user?.id) setUserId(data.user.id);
-    });
-  }, [initialUserId]);
 
   useEffect(() => {
     return () => {
@@ -255,7 +242,7 @@ export function WorkspaceClient({
           events={events}
           apiAvailable={apiAvailable}
           liveExport={liveExport}
-          realtimeActive={isSupabaseConfigured()}
+          realtimeActive={true}
         />
       );
     }

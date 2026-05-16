@@ -1,14 +1,13 @@
 import { NextResponse } from "next/server";
-import { isAuthError, jsonError, requireAuth } from "@/lib/api-auth";
+import { jsonError } from "@/lib/api-auth";
+import { getCharacter, updateCharacter } from "@/lib/local-store";
+import { promises as fs } from "fs";
+import path from "path";
 
 type RouteContext = { params: Promise<{ id: string; cId: string }> };
 
 export async function POST(request: Request, context: RouteContext) {
-  const auth = await requireAuth();
-  if (isAuthError(auth)) return auth;
-  const { supabase } = auth;
   const { id: projectId, cId } = await context.params;
-
   try {
     const formData = await request.formData();
     const file = formData.get("file");
@@ -17,35 +16,28 @@ export async function POST(request: Request, context: RouteContext) {
       return NextResponse.json({ error: "file is required" }, { status: 400 });
     }
 
-    const path = `characters/${cId}/reference.jpg`;
-    const buffer = Buffer.from(await file.arrayBuffer());
-
-    const { error: uploadError } = await supabase.storage
-      .from("images")
-      .upload(path, buffer, {
-        contentType: file.type || "image/jpeg",
-        upsert: true,
-      });
-
-    if (uploadError) return jsonError(uploadError.message);
-
-    const {
-      data: { publicUrl },
-    } = supabase.storage.from("images").getPublicUrl(path);
-
-    const { data: character, error } = await supabase
-      .from("characters")
-      .update({ reference_image_url: publicUrl })
-      .eq("id", cId)
-      .eq("project_id", projectId)
-      .select()
-      .single();
-
-    if (error || !character) {
+    const character = await getCharacter(projectId, cId);
+    if (!character) {
       return NextResponse.json({ error: "Character not found" }, { status: 404 });
     }
 
-    return NextResponse.json({ reference_image_url: publicUrl });
+    const ext = file.type.includes("png") ? "png" : "jpg";
+    const filename = `${cId}-reference.${ext}`;
+    const uploadDir = path.join(process.cwd(), "public", "uploads", "characters");
+    await fs.mkdir(uploadDir, { recursive: true });
+    const buffer = Buffer.from(await file.arrayBuffer());
+    await fs.writeFile(path.join(uploadDir, filename), buffer);
+
+    const publicUrl = `/uploads/characters/${filename}`;
+
+    const updated = await updateCharacter(projectId, cId, {
+      reference_image_url: publicUrl,
+    });
+
+    return NextResponse.json({
+      reference_image_url: publicUrl,
+      character: updated ?? character,
+    });
   } catch (err) {
     return jsonError(err instanceof Error ? err.message : "Unknown error");
   }
