@@ -53,47 +53,51 @@ export async function POST(request: Request, context: RouteContext) {
     const cw = body.canvas_width ?? 1280;
     const ch = body.canvas_height ?? 720;
 
-    // ── Build the scene prompt from pin content ──────────────────────────────
-    // Each pin contributes what it IS (label + description) and WHERE it sits.
-    // The goal is a single vivid image that looks like the project's world.
-    const aesthetic = [
-      styleConfig.aesthetic_style,
-      styleConfig.aesthetic,
-      styleConfig.theme ? `${styleConfig.theme} world` : null,
-      styleConfig.tone,
-    ]
-      .filter(Boolean)
-      .join(", ");
+    // ── Derive a rich style clause from the project configuration ─────────────
+    const styleParts: string[] = [];
+    if (styleConfig.aesthetic_style) styleParts.push(styleConfig.aesthetic_style);
+    if (styleConfig.aesthetic && styleConfig.aesthetic !== styleConfig.aesthetic_style)
+      styleParts.push(styleConfig.aesthetic);
+    if (styleConfig.theme) styleParts.push(`${styleConfig.theme.replace(/_/g, " ")} setting`);
+    if (styleConfig.tone) styleParts.push(styleConfig.tone);
+    const styleClause = styleParts.length ? styleParts.join(", ") : "cinematic fantasy";
+    const genreWord = styleConfig.theme?.replace(/_/g, " ") ?? "cinematic";
 
+    // ── Build location descriptions from pin content and spatial position ─────
     const pins = body.pins ?? [];
 
     let sceneDesc: string;
 
     if (pins.length === 0) {
       sceneDesc =
-        "A sweeping cinematic landscape backdrop with dramatic lighting, " +
-        "rich environmental detail, high production value";
+        "sweeping wide-angle establishing shot, dramatic atmospheric lighting, " +
+        "rich foreground-to-horizon environmental depth, volumetric fog or haze, " +
+        "highly detailed architecture and landscape, matte-painting quality";
     } else {
-      // Describe each location as a real visual element placed in the scene
       const locationDescs = pins.map((pin) => {
         const pos = spatialPosition(pin.canvas_x, pin.canvas_y, cw, ch);
+        const xPct = Math.round((pin.canvas_x / cw) * 100);
+        const yPct = Math.round((pin.canvas_y / ch) * 100);
         const detail = pin.description?.trim()
-          ? `${pin.label} — ${pin.description}`
+          ? `${pin.label} (${pin.description.trim()})`
           : pin.label;
-        return `in the ${pos}: ${detail}`;
+        return `[${pos} — ${xPct}% across, ${yPct}% down] ${detail}`;
       });
 
       sceneDesc =
-        `A single cohesive cinematic scene showing the following locations: ` +
-        locationDescs.join("; ") +
-        `. Each location rendered as a distinct recognisable landmark visible in the image, ` +
-        `dramatic lighting, high production value, photorealistic detail`;
+        `A single vast panoramic ${genreWord} landscape with ALL of the following clearly visible landmarks ` +
+        `rendered at their indicated positions: ${locationDescs.join(" | ")}. ` +
+        `Composition rule: ultra-wide establishing shot so every landmark fits in frame simultaneously. ` +
+        `Each landmark is a distinct, recognisable architectural or geographic feature with unique ` +
+        `silhouette and lighting. ` +
+        `Dramatic volumetric lighting, atmospheric depth haze, highly detailed textures on every surface. ` +
+        `Golden-hour or moonlit sky casting long shadows that reinforce the ${genreWord} mood.`;
     }
 
     const prompt =
-      `${aesthetic}. ${sceneDesc}. ` +
-      `The image should feel like an establishing shot from a ${styleConfig.theme ?? "fantasy"} world, ` +
-      `with every named location clearly visible in its stated position.`;
+      `${styleClause}. ${sceneDesc}. ` +
+      `Masterpiece-quality environment art, 8K ultra-detailed, rich colour grading, ` +
+      `no people in frame, no text overlays, no UI elements — pure cinematic world backdrop.`;
 
     // ── Upload sketch to fal storage for img2img ─────────────────────────────
     let sketchCdnUrl: string | undefined;

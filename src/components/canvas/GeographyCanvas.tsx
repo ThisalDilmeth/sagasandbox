@@ -50,10 +50,22 @@ interface BrushLine {
   points: number[];
 }
 
+// World-space bounding box for the synthesised scenery image so it pans/zooms
+// with the rest of the canvas instead of being fixed to the screen.
+interface SceneryBounds {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
 const MIN_SCALE = 0.1;
 const MAX_SCALE = 5;
 const CURSOR_STALE_MS = 4000;
 const CURSOR_BROADCAST_MS = 80;
+// World-space distance the pointer must travel before a mousedown turns into a
+// brush drag instead of a "click to place pin" action.
+const DRAG_THRESHOLD = 4;
 
 interface PeerCursor {
   x: number;
@@ -88,6 +100,15 @@ export const GeographyCanvas = forwardRef<
   const stageRef = useRef<Konva.Stage>(null);
   const cursorThrottleRef = useRef(0);
   const hydratedStateKeyRef = useRef<string | null>(null);
+
+  // Distinguish a "click" from a "drag" without relying on e.target class checks.
+  // mouseDownRef  — true while the primary button is held
+  // hasMovedRef   — flips to true once the pointer crosses DRAG_THRESHOLD
+  // mouseDownPt   — world-space position where the button was pressed
+  const mouseDownRef = useRef(false);
+  const hasMovedRef = useRef(false);
+  const mouseDownPt = useRef<{ x: number; y: number } | null>(null);
+
   const [size, setSize] = useState({ width: 800, height: 600 });
   const [tool, setTool] = useState<CanvasTool>("brush");
   const [stagePos, setStagePos] = useState({ x: 0, y: 0 });
@@ -98,11 +119,11 @@ export const GeographyCanvas = forwardRef<
   );
   const [drawing, setDrawing] = useState(false);
   const [currentLineId, setCurrentLineId] = useState<string | null>(null);
-  const [pinCreator, setPinCreator] = useState<{
-    x: number;
-    y: number;
-  } | null>(null);
+  const [pinCreator, setPinCreator] = useState<{ x: number; y: number } | null>(null);
+
+  // Scenery image is stored in *world space* so it moves and zooms with the canvas.
   const [sceneryImageUrl, setSceneryImageUrl] = useState<string | null>(null);
+  const [sceneryBounds, setSceneryBounds] = useState<SceneryBounds | null>(null);
   const [sceneryImage, setSceneryImage] = useState<HTMLImageElement | null>(null);
   const [synthesizing, setSynthesizing] = useState(false);
 
@@ -174,12 +195,13 @@ export const GeographyCanvas = forwardRef<
     [applyCanvasOp, hydrateFromState],
   );
 
+  // Hydrate canvas state and restore any previously synthesised scenery
   useEffect(() => {
     const stateKey = JSON.stringify(initialCanvasState ?? null);
     if (hydratedStateKeyRef.current === stateKey) return;
     hydratedStateKeyRef.current = stateKey;
     hydrateFromState(initialCanvasState);
-    // Restore previously synthesized scenery
+
     const url =
       typeof initialCanvasState?.scenery_preview_url === "string"
         ? initialCanvasState.scenery_preview_url
@@ -187,7 +209,7 @@ export const GeographyCanvas = forwardRef<
     if (url) setSceneryImageUrl(url);
   }, [initialCanvasState, hydrateFromState]);
 
-  // Load HTMLImageElement whenever the URL changes so Konva can render it
+  // Load HTMLImageElement whenever the URL changes
   useEffect(() => {
     if (!sceneryImageUrl) {
       setSceneryImage(null);
@@ -200,6 +222,7 @@ export const GeographyCanvas = forwardRef<
     img.onerror = () => setSceneryImage(null);
   }, [sceneryImageUrl]);
 
+  // Prune stale peer cursors
   useEffect(() => {
     const interval = setInterval(() => {
       const cutoff = Date.now() - CURSOR_STALE_MS;
@@ -219,6 +242,7 @@ export const GeographyCanvas = forwardRef<
     return () => clearInterval(interval);
   }, []);
 
+  // Observe container resize
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -279,17 +303,14 @@ export const GeographyCanvas = forwardRef<
     return transform.point(pos);
   }, []);
 
+  // Record where the button went down — don't start drawing yet.
   const handlePointerDown = useCallback(() => {
     if (tool === "pan") return;
     const point = getStagePoint();
     if (!point) return;
-
-    if (tool === "brush") {
-      const id = crypto.randomUUID();
-      setCurrentLineId(id);
-      setDrawing(true);
-      setLines((prev) => [...prev, { id, points: [point.x, point.y] }]);
-    }
+    mouseDownRef.current = true;
+    hasMovedRef.current = false;
+    mouseDownPt.current = point;
   }, [tool, getStagePoint]);
 
   const broadcastCursor = useCallback(
@@ -311,6 +332,37 @@ export const GeographyCanvas = forwardRef<
     const point = getStagePoint();
     if (!point) return;
 
+    // Cross the drag threshold → start a brush stroke from the original down-point.
+    if (
+      mouseDownRef.current &&
+      !hasMovedRef.current &&
+      mouseDownPt.current &&
+      tool === "brush"
+    ) {
+      const dx = Math.abs(point.x - mouseDownPt.current.x);
+      const dy = Math.abs(point.y - mouseDownPt.current.y);
+      if (dx > DRAG_THRESHOLD || dy > DRAG_THRESHOLD) {
+        hasMovedRef.current = true;
+        const id = crypto.randomUUID();
+        setCurrentLineId(id);
+        setDrawing(true);
+        setLines((prev) => [
+          ...prev,
+          {
+            id,
+            points: [
+              mouseDownPt.current!.x,
+              mouseDownPt.current!.y,
+              point.x,
+              point.y,
+            ],
+          },
+        ]);
+        broadcastCursor(point);
+        return; // point already included above
+      }
+    }
+
     if (drawing && currentLineId) {
       setLines((prev) =>
         prev.map((line) =>
@@ -322,9 +374,10 @@ export const GeographyCanvas = forwardRef<
     }
 
     broadcastCursor(point);
-  }, [drawing, currentLineId, getStagePoint, broadcastCursor]);
+  }, [drawing, currentLineId, tool, getStagePoint, broadcastCursor]);
 
   const handlePointerUp = useCallback(() => {
+    mouseDownRef.current = false;
     if (drawing && currentLineId) {
       const line = lines.find((l) => l.id === currentLineId);
       if (line) {
@@ -348,13 +401,14 @@ export const GeographyCanvas = forwardRef<
     persistCanvas,
   ]);
 
+  // Open the pin creator only on a true click (no drag). Because we no longer
+  // create single-point stray lines on click, e.target is always the Stage or
+  // Layer when clicking empty space — but we skip the target check entirely and
+  // rely purely on hasMoved. Existing pins cancel event bubbling themselves.
   const handleStageClick = useCallback(
-    (e: Konva.KonvaEventObject<MouseEvent>) => {
+    (_e: Konva.KonvaEventObject<MouseEvent>) => {
       if (tool !== "brush") return;
-      const clickedOnEmpty =
-        e.target === e.target.getStage() ||
-        e.target.getClassName() === "Layer";
-      if (!clickedOnEmpty) return;
+      if (hasMovedRef.current) return; // was a drag
       const point = getStagePoint();
       if (!point) return;
       setPinCreator({ x: point.x, y: point.y });
@@ -394,15 +448,21 @@ export const GeographyCanvas = forwardRef<
             disabled={synthesizing}
             onClick={() => {
               setSynthesizing(true);
+              // Capture viewport world bounds at synthesis time so the generated
+              // image is placed at exactly the region that was visible.
+              const capturedBounds: SceneryBounds = {
+                x: -stagePos.x / scale,
+                y: -stagePos.y / scale,
+                w: size.width / scale,
+                h: size.height / scale,
+              };
               void (async () => {
                 try {
-                  // Export the full canvas (sketch lines + pin markers) as a PNG
                   const stage = stageRef.current;
                   const sketchDataurl = stage
                     ? stage.toDataURL({ pixelRatio: 1 })
                     : undefined;
 
-                  // Build spatial pin descriptions for the prompt
                   const pinRefs = pins.map((p) => ({
                     label: p.label,
                     description: p.description,
@@ -416,8 +476,6 @@ export const GeographyCanvas = forwardRef<
                       method: "POST",
                       headers: { "Content-Type": "application/json" },
                       body: JSON.stringify({
-                        sketch_description:
-                          "Living canvas: enhance brush strokes into cinematic scenery",
                         sketch_dataurl: sketchDataurl,
                         pins: pinRefs,
                         canvas_width: size.width,
@@ -432,6 +490,7 @@ export const GeographyCanvas = forwardRef<
                   const data = (await res.json()) as { image_url?: string | null };
                   if (data.image_url) {
                     setSceneryImageUrl(data.image_url);
+                    setSceneryBounds(capturedBounds);
                   } else {
                     toastError("Synthesis returned no image — check FAL_KEY");
                   }
@@ -454,7 +513,7 @@ export const GeographyCanvas = forwardRef<
         ) : null}
       </div>
     ),
-    [tool, apiAvailable, projectId, pins, size, synthesizing, stageRef],
+    [tool, apiAvailable, projectId, pins, size, synthesizing, stagePos, scale],
   );
 
   return (
@@ -497,19 +556,21 @@ export const GeographyCanvas = forwardRef<
         }}
         className="cursor-crosshair"
       >
-        {/* Scenery background — below sketch lines */}
-        {sceneryImage ? (
+        {/* Scenery backdrop — lives in world space so it pans/zooms with the canvas.
+            listening={false} ensures it never intercepts pointer events. */}
+        {sceneryImage && sceneryBounds ? (
           <Layer listening={false}>
             <KonvaImage
               image={sceneryImage}
-              x={-stagePos.x / scale}
-              y={-stagePos.y / scale}
-              width={size.width / scale}
-              height={size.height / scale}
+              x={sceneryBounds.x}
+              y={sceneryBounds.y}
+              width={sceneryBounds.w}
+              height={sceneryBounds.h}
               opacity={0.85}
             />
           </Layer>
         ) : null}
+
         <Layer>
           {lines.map((line) => (
             <Line

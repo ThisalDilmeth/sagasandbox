@@ -80,7 +80,9 @@ export async function falSubscribeImage(
 
   if (isImg2Img) {
     input.image_url = imageUrl
-    input.strength = 0.75
+    // 0.65 lets Flux use the sketch as composition guidance without being
+    // constrained by the raw brush-stroke appearance.
+    input.strength = 0.65
     // image-to-image derives output size from input; don't send image_size
     if (!model.includes("image-to-image")) {
       input.image_size = { width, height }
