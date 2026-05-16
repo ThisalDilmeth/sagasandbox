@@ -10,6 +10,10 @@ export interface FalQueueOptions {
   prompt: string
   model?: string
   imageUrl?: string
+  /** img2img denoising strength (0–1). Defaults to 0.65.
+   *  Lower = more of the input image preserved (positions stable).
+   *  Higher = more creative freedom but layout drifts. */
+  strength?: number
   width?: number
   height?: number
 }
@@ -65,6 +69,7 @@ export async function falSubscribeImage(
     prompt,
     model = "fal-ai/flux/dev",
     imageUrl,
+    strength = 0.65,
     width = 1024,
     height = 768,
   } = options
@@ -82,7 +87,7 @@ export async function falSubscribeImage(
     input.image_url = imageUrl
     // 0.65 lets Flux use the sketch as composition guidance without being
     // constrained by the raw brush-stroke appearance.
-    input.strength = 0.65
+    input.strength = strength
     // image-to-image derives output size from input; don't send image_size
     if (!model.includes("image-to-image")) {
       input.image_size = { width, height }

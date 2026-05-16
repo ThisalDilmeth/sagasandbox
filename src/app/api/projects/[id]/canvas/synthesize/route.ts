@@ -2,6 +2,11 @@ import { NextResponse } from "next/server";
 import { jsonError } from "@/lib/api-auth";
 import { getProject, updateProject } from "@/lib/local-store";
 import { falSubscribeImage, projectStyleConfig } from "@/lib/fal";
+import { fal } from "@fal-ai/client";
+
+if (process.env.FAL_KEY) {
+  fal.config({ credentials: process.env.FAL_KEY });
+}
 
 type RouteContext = { params: Promise<{ id: string }> };
 
@@ -13,48 +18,41 @@ interface PinRef {
 }
 
 /**
- * Translates a canvas-space (x, y) coordinate into rich spatial language that
- * Flux can honour when composing the scene.
+ * Returns a concise spatial descriptor for a canvas (x,y) coordinate.
+ * Uses thirds so Flux can map phrases to image regions reliably.
  */
 function spatialPhrase(x: number, y: number, cw: number, ch: number): string {
   const xPct = x / cw;
   const yPct = y / ch;
 
-  // Horizontal thirds
-  const h =
-    xPct < 0.20 ? "the far-left edge" :
-    xPct < 0.40 ? "the left third" :
-    xPct < 0.60 ? "the horizontal center" :
-    xPct < 0.80 ? "the right third" :
-                  "the far-right edge";
+  const col =
+    xPct < 0.15 ? "far-left edge" :
+    xPct < 0.38 ? "left third" :
+    xPct < 0.62 ? "center" :
+    xPct < 0.85 ? "right third" :
+                  "far-right edge";
 
-  // Vertical thirds
-  const v =
-    yPct < 0.20 ? "the top edge" :
-    yPct < 0.40 ? "the upper third" :
-    yPct < 0.60 ? "the vertical middle" :
-    yPct < 0.80 ? "the lower third" :
-                  "the bottom foreground";
+  const row =
+    yPct < 0.15 ? "top edge" :
+    yPct < 0.38 ? "upper third" :
+    yPct < 0.62 ? "middle" :
+    yPct < 0.85 ? "lower third" :
+                  "bottom foreground";
 
-  const hCenter = h === "the horizontal center";
-  const vCenter = v === "the vertical middle";
-  if (hCenter && vCenter) return "the center of the image";
-  if (hCenter) return v;
-  if (vCenter) return h;
-  return `${v}, ${h}`;
+  if (col === "center" && row === "middle") return "the center";
+  if (col === "center") return `the ${row}`;
+  if (row === "middle") return `the ${col}`;
+  return `the ${row}, ${col}`;
 }
 
-/**
- * Builds a visual description of a location from its label and optional
- * description text. The result is a concrete visual subject phrase — e.g.
- * "an erupting volcano with flowing lava" — not a UI annotation.
- */
+/** Constructs a vivid visual subject line from label + description. */
 function locationSubject(label: string, description?: string | null): string {
   const base = label.trim();
-  if (description?.trim()) {
-    return `${base} — ${description.trim()}`;
-  }
-  return base;
+  const detail = description?.trim();
+  if (!detail) return base;
+  // Avoid duplicating the label if description starts with it
+  if (detail.toLowerCase().startsWith(base.toLowerCase())) return detail;
+  return `${base}: ${detail}`;
 }
 
 export async function POST(request: Request, context: RouteContext) {
@@ -64,8 +62,9 @@ export async function POST(request: Request, context: RouteContext) {
       pins?: PinRef[];
       canvas_width?: number;
       canvas_height?: number;
-      // sketch_dataurl intentionally ignored: we generate from text so the
-      // output shows what the pins MEAN, not what the UI circles look like.
+      /** URL of the previously generated scenery. When present we use img2img
+       *  at low strength so existing landmark positions are preserved. */
+      existing_image_url?: string;
     };
 
     const project = await getProject(projectId);
@@ -77,7 +76,7 @@ export async function POST(request: Request, context: RouteContext) {
     const cw = body.canvas_width ?? 1280;
     const ch = body.canvas_height ?? 720;
 
-    // ── Build style clause ────────────────────────────────────────────────────
+    // ── Style clause ──────────────────────────────────────────────────────────
     const styleParts: string[] = [];
     if (styleConfig.aesthetic_style) styleParts.push(styleConfig.aesthetic_style);
     if (styleConfig.aesthetic && styleConfig.aesthetic !== styleConfig.aesthetic_style)
@@ -87,68 +86,84 @@ export async function POST(request: Request, context: RouteContext) {
     const styleClause = styleParts.length ? styleParts.join(", ") : "cinematic fantasy";
     const genreWord = styleConfig.theme?.replace(/_/g, " ") ?? "fantasy";
 
-    // ── Build scene from pin content (label + description = the visual subject) ─
+    // ── Build prompt ──────────────────────────────────────────────────────────
     const pins = body.pins ?? [];
+    const ordinals = ["ONE", "TWO", "THREE", "FOUR", "FIVE", "SIX", "SEVEN", "EIGHT"];
+    const countWord = ordinals[(pins.length || 1) - 1] ?? String(pins.length);
 
     let sceneBody: string;
 
     if (pins.length === 0) {
-      // No pins — generate a rich establishing shot for the world
       sceneBody =
-        `A sweeping ${genreWord} landscape, wide-angle establishing shot. ` +
+        `A sweeping ${genreWord} landscape — wide-angle establishing shot. ` +
         `Dramatic atmospheric lighting, volumetric fog, rich environmental detail ` +
-        `from foreground to the horizon. Matte-painting quality, highly detailed.`;
-    } else if (pins.length === 1) {
-      const pin = pins[0];
-      const subject = locationSubject(pin.label, pin.description);
-      const pos = spatialPhrase(pin.canvas_x, pin.canvas_y, cw, ch);
-      sceneBody =
-        `A dramatic ${genreWord} landscape scene dominated by ${subject}, ` +
-        `prominently placed ${pos}. ` +
-        `Wide-angle view showing the full environment surrounding this landmark. ` +
-        `Dramatic atmospheric lighting, volumetric haze, richly detailed textures. ` +
-        `Cinematic establishing shot.`;
+        `from foreground rocks to the distant horizon. Matte-painting quality.`;
     } else {
-      // Multiple pins — give each landmark a numbered "inventory" entry.
-      // Flux respects numbered lists far better than bullet blobs and is less
-      // likely to skip a subject when the count and a closing checklist agree.
-      const count = pins.length;
-      const ordinals = ["ONE", "TWO", "THREE", "FOUR", "FIVE", "SIX", "SEVEN", "EIGHT"];
-      const countWord = ordinals[count - 1] ?? String(count);
-
+      // Number each landmark with subject + exact position.
+      // The numbered format gives each subject equal model attention;
+      // the closing checklist reinforces recall so none are dropped.
       const entries = pins.map((pin, i) => {
         const subject = locationSubject(pin.label, pin.description);
         const pos = spatialPhrase(pin.canvas_x, pin.canvas_y, cw, ch);
-        // Give each landmark a clean visual description and explicit placement
-        return `Landmark ${i + 1}: ${subject.toUpperCase()} — ${pos}.`;
+        return `Landmark ${i + 1}: ${subject} — located at ${pos} of the image.`;
       });
 
-      // Short closing checklist repeats subjects so the model "confirms" each
       const checklist = pins
-        .map((pin, i) => `${i + 1}) ${pin.label.toUpperCase()} ✓`)
-        .join("  ");
+        .map((pin, i) => `${i + 1}. ${pin.label.toUpperCase()}`)
+        .join("  |  ");
+
+      const useAnchor = Boolean(body.existing_image_url);
 
       sceneBody =
-        `A single ultra-wide panoramic ${genreWord} establishing shot containing ` +
-        `EXACTLY ${countWord} (${count}) clearly distinct landmarks. ` +
-        `Every landmark listed below MUST appear in the final image — do not omit any:\n` +
+        (useAnchor
+          // When anchoring off existing image: focus instruction on preserving
+          // existing elements and incorporating the updated landmark list.
+          ? `Keep all existing landmarks in their current positions. ` +
+            `Update and integrate the following COMPLETE landmark list into the scene:\n`
+          : `A single ultra-wide panoramic ${genreWord} establishing shot ` +
+            `containing EXACTLY ${countWord} (${pins.length}) clearly distinct landmarks:\n`
+        ) +
         entries.join("\n") + "\n" +
-        `All ${count} landmarks occupy their stated positions and are simultaneously ` +
-        `visible in one wide frame. Each landmark has a completely unique silhouette, ` +
-        `material palette, and lighting so none can be confused with another. ` +
-        `Composition checklist — all must be present: ${checklist}. ` +
-        `Dramatic ${genreWord} sky, volumetric atmosphere, matte-painting quality.`;
+        `Every landmark listed above MUST be clearly visible and recognisable ` +
+        `in its stated position. Do not omit or merge any landmark. ` +
+        `Composition checklist — all ${pins.length} must be present: ${checklist}. ` +
+        `Ultra-wide frame so all landmarks fit simultaneously. ` +
+        `Each landmark has a unique silhouette and lighting character. ` +
+        `Dramatic ${genreWord} sky, volumetric atmosphere, depth haze, ` +
+        `matte-painting quality, no figures, no text.`;
     }
 
     const prompt =
       `${styleClause}. ${sceneBody} ` +
-      `Masterpiece quality, 8K render, hyper-detailed environments, ` +
-      `no human figures, no text, no UI markers — pure world backdrop.`;
+      `Masterpiece-quality environment concept art, 8K ultra-detailed, ` +
+      `rich colour grading — pure cinematic world backdrop.`;
 
-    // ── Always use text-to-image: Flux generates the world from the prompt ────
+    // ── Upload existing scenery as img2img anchor if provided ─────────────────
+    // Low strength (0.35) means the existing layout is ~65% preserved, so
+    // positions of already-rendered landmarks don't drift when new ones are added.
+    let anchorCdnUrl: string | undefined;
+    if (body.existing_image_url && process.env.FAL_KEY) {
+      try {
+        const resp = await fetch(body.existing_image_url);
+        if (resp.ok) {
+          const buffer = await resp.arrayBuffer();
+          const blob = new Blob([buffer], { type: "image/png" });
+          anchorCdnUrl = await fal.storage.upload(blob);
+        }
+      } catch (err) {
+        console.warn("Anchor image upload failed, falling back to t2i", err);
+      }
+    }
+
     const imageUrl = await falSubscribeImage({
       prompt,
-      model: "fal-ai/flux/dev",
+      model: anchorCdnUrl
+        ? "fal-ai/flux/dev/image-to-image"
+        : "fal-ai/flux/dev",
+      imageUrl: anchorCdnUrl,
+      // 0.35 = 65% of the existing layout is preserved; new landmarks integrate
+      // without displacing the ones already rendered.
+      strength: 0.35,
       width: 1280,
       height: 720,
     });

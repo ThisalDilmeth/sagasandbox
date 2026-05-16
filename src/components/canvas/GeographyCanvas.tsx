@@ -487,6 +487,9 @@ export const GeographyCanvas = forwardRef<
                         pins: pinRefs,
                         canvas_width: size.width,
                         canvas_height: size.height,
+                        // Pass current scenery so re-synthesis uses img2img —
+                        // this locks existing landmark positions in place.
+                        existing_image_url: sceneryImageUrl ?? undefined,
                       }),
                     },
                   );
