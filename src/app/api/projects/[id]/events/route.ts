@@ -91,6 +91,7 @@ export async function POST(request: Request, context: RouteContext) {
       pin_id: body.pin_id ?? null,
       title: body.title,
       description: body.description ?? null,
+      scene_keywords: null,
       sequence_order: body.sequence_order,
       in_world_time: body.in_world_time ?? null,
       is_ghost: body.is_ghost ?? false,

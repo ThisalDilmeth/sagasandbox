@@ -16,7 +16,7 @@ import {
   arrayMove,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { Check, Loader2, Mic, Pencil, Plus, Trash2 } from "lucide-react";
+import { Check, Loader2, Mic, Pencil, Plus, Sparkles, Trash2 } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { useUIStore } from "@/store/ui-store";
 import type { LocationPin, TimelineEvent, Character } from "@/types/app";
@@ -80,6 +80,7 @@ export function TimelineStrip({
       pin_id: form.pin_id || null,
       title: form.title,
       description: form.description,
+      scene_keywords: null,
       sequence_order,
       in_world_time: null,
       generated_image_url: null,
@@ -308,6 +309,8 @@ function SortableEventCard({
   const [title, setTitle] = useState(event.title);
   const [description, setDescription] = useState(event.description ?? "");
   const [recording, setRecording] = useState(false);
+  const [sceneKeywords, setSceneKeywords] = useState(event.scene_keywords ?? "");
+  const [generatingScene, setGeneratingScene] = useState(false);
   const isGhost = event.is_ghost;
   const { attributes, listeners, setNodeRef, transform, transition } =
     useSortable({ id: event.id });
@@ -362,6 +365,31 @@ function SortableEventCard({
     }
   }
 
+  async function handleGenerateScene() {
+    if (!apiAvailable) return;
+    setGeneratingScene(true);
+    // Optimistically mark as generating
+    onUpdated({ ...event, gen_status: "generating" });
+    try {
+      const res = await fetch(
+        `/api/projects/${projectId}/events/${event.id}/scene`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ scene_keywords: sceneKeywords }),
+        },
+      );
+      if (!res.ok) throw new Error(await readApiError(res, "Scene generation failed"));
+      const { event: updated } = (await res.json()) as { event: TimelineEvent };
+      onUpdated(updated);
+    } catch (err) {
+      onUpdated({ ...event, gen_status: "error" });
+      toastError(err instanceof Error ? err.message : "Scene generation failed");
+    } finally {
+      setGeneratingScene(false);
+    }
+  }
+
   return (
     <div ref={setNodeRef} style={style} className="relative shrink-0">
       <button
@@ -403,18 +431,55 @@ function SortableEventCard({
       </button>
 
       {expanded ? (
-        <div className="absolute bottom-full left-0 z-20 mb-2 w-72 rounded-lg border border-[#2a2a2e] bg-[#1a1a1e] p-3 shadow-xl">
+        <div className="absolute bottom-full left-0 z-20 mb-2 w-80 rounded-lg border border-[#2a2a2e] bg-[#1a1a1e] p-3 shadow-xl">
           {isGhost ? (
             <p className="mb-2 text-[10px] uppercase tracking-wide text-[#9ca3af]">
               Ghost node — approve in Copilot
             </p>
           ) : null}
+
+          {/* Scene image / generation status */}
           <GenStatusImage
             status={asGenStatus(event.gen_status)}
             imageUrl={event.generated_image_url}
             alt={event.title}
             className="mb-2"
           />
+
+          {/* ── Scene canvas ─────────────────────────────────────────────── */}
+          <div className="mb-3 rounded-md border border-[#2a2a2e] bg-[#0e0e0f] p-2">
+            <p className="mb-1.5 text-[10px] font-medium uppercase tracking-wide text-[#7c3aed]">
+              Scene
+            </p>
+            <textarea
+              value={sceneKeywords}
+              onChange={(e) => setSceneKeywords(e.target.value)}
+              placeholder={`What's in this scene? e.g. "volcano erupting at night, hero fleeing, ash clouds"\n(Leave blank to use the event description)`}
+              rows={3}
+              disabled={!apiAvailable || generatingScene}
+              className="mb-2 w-full resize-none rounded border border-[#2a2a2e] bg-[#1a1a1e] px-2 py-1.5 text-xs text-white placeholder-[#4b5563] outline-none focus:border-[#7c3aed] disabled:opacity-50"
+            />
+            <button
+              type="button"
+              disabled={!apiAvailable || generatingScene}
+              onClick={() => void handleGenerateScene()}
+              className="flex w-full items-center justify-center gap-1.5 rounded bg-[#7c3aed] px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50"
+            >
+              {generatingScene ? (
+                <>
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  Generating scene…
+                </>
+              ) : (
+                <>
+                  <Sparkles className="h-3 w-3" />
+                  Generate scene
+                </>
+              )}
+            </button>
+          </div>
+
+          {/* Event description / edit */}
           {editing ? (
             <div className="space-y-2">
               <input
@@ -441,21 +506,24 @@ function SortableEventCard({
               {event.audio_summary ?? event.description}
             </p>
           )}
+
           {matched.length > 0 ? (
             <div className="mt-2 flex flex-wrap gap-1">
               {matched.map((c) => (
                 <span
                   key={c.id}
-                  className="rounded-full bg-[#2a2a2e] px-2 py-0.5 text-[10px]"
+                  className="rounded-full bg-[#2a2a2e] px-2 py-1 text-[10px]"
                 >
                   {c.name}
                 </span>
               ))}
             </div>
           ) : null}
+
           {event.audio_url ? (
             <audio controls src={event.audio_url} className="mt-2 w-full" />
           ) : null}
+
           <div className="mt-2 flex gap-1">
             <button
               type="button"

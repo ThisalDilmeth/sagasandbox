@@ -50,6 +50,10 @@ export interface TimelineEvent {
   pin_id: string | null
   title: string
   description: string | null
+  /** Free-form scene keywords/description for this card's own scene generation.
+   *  E.g. "volcano erupting, lava flows, ash cloud" — used to synthesise the
+   *  card's scene image independently of the shared geography canvas. */
+  scene_keywords: string | null
   sequence_order: number
   in_world_time: string | null
   generated_image_url: string | null

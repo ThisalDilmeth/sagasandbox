@@ -47,6 +47,20 @@ function resolveExportDownloadUrl(
   return outputUrl;
 }
 
+/** Parse `output_url` for `animatic_video` — may be a JSON array of clip URLs. */
+function parseVideoClips(outputUrl: string | null | undefined): string[] {
+  if (!outputUrl) return [];
+  try {
+    const parsed = JSON.parse(outputUrl) as unknown;
+    if (Array.isArray(parsed)) {
+      return parsed.filter((u): u is string => typeof u === "string");
+    }
+  } catch {
+    // single URL stored directly
+  }
+  return typeof outputUrl === "string" ? [outputUrl] : [];
+}
+
 function progressWidth(status: Export["status"] | null) {
   switch (status) {
     case "queued":
@@ -75,6 +89,7 @@ export function ExportTerminal({
     null,
   );
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
+  const [videoClips, setVideoClips] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -99,6 +114,7 @@ export function ExportTerminal({
     setSubmitting(true);
     setError(null);
     setDownloadUrl(null);
+    setVideoClips([]);
     setExportStatus(null);
     setCurrentExportId(null);
     try {
@@ -135,6 +151,12 @@ export function ExportTerminal({
     realtimeExport?.status === "done"
       ? resolveExportDownloadUrl(exportType, realtimeExport.output_url, null)
       : downloadUrl;
+  const displayVideoClips =
+    exportType === "animatic_video" && displayStatus === "done"
+      ? (realtimeExport?.status === "done"
+          ? parseVideoClips(realtimeExport.output_url)
+          : videoClips)
+      : [];
   const displayError =
     realtimeExport?.status === "error" ? "Export failed" : error;
 
@@ -161,13 +183,15 @@ export function ExportTerminal({
         setExportStatus(data.export.status);
         onExportUpdate?.(data.export);
         if (data.export.status === "done") {
-          setDownloadUrl(
-            resolveExportDownloadUrl(
-              exportType,
-              data.export.output_url,
-              data.signed_url,
-            ),
+          const resolved = resolveExportDownloadUrl(
+            exportType,
+            data.export.output_url,
+            data.signed_url,
           );
+          setDownloadUrl(resolved);
+          if (exportType === "animatic_video") {
+            setVideoClips(parseVideoClips(data.export.output_url));
+          }
           clearInterval(interval);
         }
         if (data.export.status === "error") {
@@ -269,7 +293,38 @@ export function ExportTerminal({
         >
           {submitting ? "Starting…" : "Start export"}
         </button>
-        {displayStatus === "done" && displayDownloadUrl ? (
+
+        {/* ── Video clips (animatic_video) ──────────────────────────────── */}
+        {displayVideoClips.length > 0 ? (
+          <div className="space-y-2">
+            <p className="text-[10px] font-medium uppercase tracking-wide text-[#9ca3af]">
+              {displayVideoClips.length} scene clip
+              {displayVideoClips.length > 1 ? "s" : ""} generated
+            </p>
+            {displayVideoClips.map((url, i) => (
+              <div key={url} className="rounded-lg border border-[#2a2a2e] overflow-hidden">
+                <p className="px-2 py-1 text-[10px] text-[#9ca3af]">
+                  Scene {i + 1}
+                </p>
+                {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
+                <video
+                  src={url}
+                  controls
+                  className="w-full"
+                  style={{ maxHeight: "140px" }}
+                />
+                <a
+                  href={url}
+                  download={`scene-${i + 1}.mp4`}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-[#9ca3af] hover:text-white"
+                >
+                  <Download className="h-3.5 w-3.5" />
+                  Download clip
+                </a>
+              </div>
+            ))}
+          </div>
+        ) : displayStatus === "done" && displayDownloadUrl ? (
           <a
             href={displayDownloadUrl}
             download

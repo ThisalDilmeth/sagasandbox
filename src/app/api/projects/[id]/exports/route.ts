@@ -46,33 +46,47 @@ export async function POST(request: Request, context: RouteContext) {
 
         if (body.type === "animatic_video") {
           const allEvents = await listEvents(projectId);
-          const selected = allEvents.filter((e) => body.event_ids.includes(e.id));
+          const selected = allEvents
+            .filter((e) => body.event_ids.includes(e.id))
+            .sort((a, b) => a.sequence_order - b.sequence_order);
 
           const styleConfig = projectStyleConfig(project);
           const stylePrefix = `${styleConfig.aesthetic_style ?? ""} ${styleConfig.theme ?? ""}`.trim();
 
-          // Build a sequential narrative prompt from selected events
-          const sceneDescriptions = selected
-            .map(
-              (e, i) =>
-                `Scene ${i + 1}: ${e.description ?? e.title}`,
-            )
-            .join(". ");
+          // Generate a short animated video clip for EACH scene card in parallel.
+          // Each clip uses the card's generated scene image as the visual anchor
+          // and the card's description as the motion prompt.
+          const clipResults = await Promise.allSettled(
+            selected.map(async (ev) => {
+              const motionPrompt = [
+                stylePrefix,
+                `Cinematic camera motion through a single scene.`,
+                ev.scene_keywords ?? ev.description ?? ev.title,
+                `Smooth atmospheric movement, no cuts.`,
+              ]
+                .filter(Boolean)
+                .join(" ");
 
-          const prompt = `${stylePrefix}. Cinematic animated sequence. ${sceneDescriptions}. Smooth transitions between scenes.`;
+              return falSubscribeVideo({
+                prompt: motionPrompt,
+                imageUrl: ev.generated_image_url ?? undefined,
+              });
+            }),
+          );
 
-          // Use the first event's image as a visual anchor if available
-          const firstImageUrl = selected.find((e) => e.generated_image_url)
-            ?.generated_image_url ?? undefined;
+          const videoUrls: string[] = clipResults
+            .map((r) => (r.status === "fulfilled" ? r.value : null))
+            .filter((u): u is string => typeof u === "string" && u.length > 0);
 
-          const videoUrl = await falSubscribeVideo({
-            prompt,
-            imageUrl: firstImageUrl,
-          });
+          // Store all clip URLs as JSON; the first URL is used as the primary
+          // download in the current ExportTerminal UI.
+          const outputUrl = videoUrls.length
+            ? JSON.stringify(videoUrls)
+            : null;
 
           await updateExport(projectId, exportRow.id, {
-            status: videoUrl ? "done" : "error",
-            output_url: videoUrl ?? null,
+            status: videoUrls.length > 0 ? "done" : "error",
+            output_url: outputUrl,
           });
         } else if (body.type === "storyboard_pdf") {
           // Storyboard: return event data + images as JSON (no external service needed)
