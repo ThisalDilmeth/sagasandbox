@@ -235,6 +235,10 @@ export function StudioWorkspace({ project, initialPins }: StudioWorkspaceProps) 
     const preset = STYLE_PRESETS.find((p) => p.id === id);
     if (!preset) return;
     setStyleId(id);
+    // Clear the existing generated image so the next "Generate image" click
+    // starts completely fresh rather than re-styling the previous result.
+    setGeneratedImageUrl(null);
+    canvasRef.current?.clearScenery();
     try {
       await fetch(`/api/projects/${project.id}`, {
         method: "PATCH",

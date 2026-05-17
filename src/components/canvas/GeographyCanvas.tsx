@@ -50,6 +50,9 @@ export interface GeographyCanvasHandle {
   /** Programmatically trigger the same synthesis flow as the toolbar button,
    *  using the canvas's current viewport for correct coordinate mapping. */
   triggerSynthesize: () => void;
+  /** Clear the existing generated scene so the next synthesis starts fresh
+   *  (used when the style changes and a full re-generation is needed). */
+  clearScenery: () => void;
 }
 
 interface BrushLine {
@@ -260,7 +263,15 @@ export const GeographyCanvas = forwardRef<
 
   useImperativeHandle(
     ref,
-    () => ({ applyCanvasOp, hydrateFromState, triggerSynthesize: runSynthesize }),
+    () => ({
+      applyCanvasOp,
+      hydrateFromState,
+      triggerSynthesize: runSynthesize,
+      clearScenery: () => {
+        setSceneryImageUrl(null);
+        setSceneryBounds(null);
+      },
+    }),
     [applyCanvasOp, hydrateFromState, runSynthesize],
   );
 
