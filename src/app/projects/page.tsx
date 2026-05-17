@@ -2,6 +2,8 @@ import Link from "next/link"
 import { ProjectsHeader } from "@/app/projects/projects-header"
 import { listProjects } from "@/lib/local-store"
 
+export const dynamic = "force-dynamic";
+
 export default async function ProjectsPage() {
   const projects = await listProjects()
 

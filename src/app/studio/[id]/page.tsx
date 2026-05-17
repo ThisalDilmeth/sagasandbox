@@ -2,6 +2,8 @@ import { notFound } from "next/navigation";
 import { getProject, listPins } from "@/lib/local-store";
 import { StudioWorkspace } from "@/components/studio/StudioWorkspace";
 
+export const dynamic = "force-dynamic";
+
 type PageProps = { params: Promise<{ id: string }> };
 
 export default async function StudioPage({ params }: PageProps) {
