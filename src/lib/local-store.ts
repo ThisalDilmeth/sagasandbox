@@ -25,29 +25,26 @@ async function blobRead<T>(key: string): Promise<T> {
   const { list } = await import("@vercel/blob")
   try {
     const { blobs } = await list({ prefix: `sagasandbox/${key}`, limit: 1 })
-    console.log(`[blobRead] key=${key} found=${blobs.length} paths=${JSON.stringify(blobs.map(b => b.pathname))}`)
     if (!blobs.length) return [] as unknown as T
-    const res = await fetch(blobs[0].downloadUrl, { cache: "no-store" })
-    if (!res.ok) {
-      console.error(`[blobRead] fetch failed status=${res.status} url=${blobs[0].downloadUrl}`)
-      return [] as unknown as T
-    }
+    const res = await fetch(blobs[0].downloadUrl, {
+      cache: "no-store",
+      headers: { Authorization: `Bearer ${process.env.BLOB_READ_WRITE_TOKEN}` },
+    })
+    if (!res.ok) return [] as unknown as T
     return (await res.json()) as T
-  } catch (err) {
-    console.error(`[blobRead] error key=${key}`, err)
+  } catch {
     return [] as unknown as T
   }
 }
 
 async function blobWrite<T>(key: string, data: T): Promise<void> {
   const { put } = await import("@vercel/blob")
-  const result = await put(`sagasandbox/${key}`, JSON.stringify(data, null, 2), {
+  await put(`sagasandbox/${key}`, JSON.stringify(data, null, 2), {
     access: "private",
     contentType: "application/json",
     addRandomSuffix: false,
     allowOverwrite: true,
   })
-  console.log(`[blobWrite] key=${key} url=${result.url}`)
 }
 
 async function blobDelete(key: string): Promise<void> {
