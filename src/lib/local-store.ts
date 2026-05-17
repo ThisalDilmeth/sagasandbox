@@ -25,14 +25,20 @@ async function blobRead<T>(key: string): Promise<T> {
   const { list } = await import("@vercel/blob")
   try {
     const { blobs } = await list({ prefix: `sagasandbox/${key}`, limit: 1 })
+    console.log(`[blobRead] key=${key} blobs=${blobs.length}`, blobs.map(b => ({ pathname: b.pathname, url: b.url })))
     if (!blobs.length) return [] as unknown as T
-    const res = await fetch(blobs[0].downloadUrl, {
+    // Use blob.url (not downloadUrl) with Bearer auth — private store requires the token header
+    const res = await fetch(blobs[0].url, {
       cache: "no-store",
       headers: { Authorization: `Bearer ${process.env.BLOB_READ_WRITE_TOKEN}` },
     })
+    console.log(`[blobRead] fetch status=${res.status} key=${key}`)
     if (!res.ok) return [] as unknown as T
-    return (await res.json()) as T
-  } catch {
+    const json = await res.json() as T
+    console.log(`[blobRead] parsed ok key=${key} isArray=${Array.isArray(json)} len=${Array.isArray(json) ? (json as unknown[]).length : 'n/a'}`)
+    return json
+  } catch (err) {
+    console.error(`[blobRead] EXCEPTION key=${key}`, String(err))
     return [] as unknown as T
   }
 }
