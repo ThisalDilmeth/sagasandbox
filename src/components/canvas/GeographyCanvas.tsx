@@ -221,60 +221,10 @@ export const GeographyCanvas = forwardRef<
           canvas_y: p.canvas_y * scale + stagePos.y,
         }));
 
-        // ── Layout sketch ──────────────────────────────────────────────────
-        // Render a simple spatial map using browser Canvas: one large
-        // gradient blob per pin at its exact screen position, with a label.
-        // Sending this as `layout_dataurl` lets the server use it as an
-        // img2img anchor so Flux follows the visual layout rather than just
-        // text position hints — significantly improving position accuracy.
-        let layoutDataUrl: string | undefined;
-        try {
-          const BLOB_COLORS = [
-            "#EF4444", "#3B82F6", "#22C55E", "#F59E0B",
-            "#EC4899", "#14B8A6", "#8B5CF6", "#F97316",
-          ];
-          const offscreen = document.createElement("canvas");
-          offscreen.width  = size.width;
-          offscreen.height = size.height;
-          const ctx = offscreen.getContext("2d");
-          if (ctx) {
-            // Neutral mid-grey background
-            ctx.fillStyle = "#6B7280";
-            ctx.fillRect(0, 0, size.width, size.height);
-
-            const blobRadius = Math.max(size.width, size.height) * 0.08;
-            const fontSize   = Math.round(size.width * 0.022);
-
-            pinRefs.forEach((pin, i) => {
-              const { canvas_x: sx, canvas_y: sy } = pin;
-              const hex = BLOB_COLORS[i % BLOB_COLORS.length];
-
-              // Radial gradient blob — colour fades to transparent
-              const grad = ctx.createRadialGradient(sx, sy, 0, sx, sy, blobRadius);
-              grad.addColorStop(0,   hex + "FF");
-              grad.addColorStop(0.6, hex + "CC");
-              grad.addColorStop(1,   hex + "00");
-              ctx.fillStyle = grad;
-              ctx.beginPath();
-              ctx.arc(sx, sy, blobRadius, 0, Math.PI * 2);
-              ctx.fill();
-
-              // White label with black outline
-              ctx.font         = `bold ${fontSize}px Arial, sans-serif`;
-              ctx.textAlign    = "center";
-              ctx.textBaseline = "middle";
-              ctx.strokeStyle  = "rgba(0,0,0,0.9)";
-              ctx.lineWidth    = fontSize * 0.3;
-              ctx.strokeText(pin.label.toUpperCase(), sx, sy);
-              ctx.fillStyle    = "#FFFFFF";
-              ctx.fillText(pin.label.toUpperCase(), sx, sy);
-            });
-
-            layoutDataUrl = offscreen.toDataURL("image/jpeg", 0.85);
-          }
-        } catch {
-          // Layout sketch is best-effort — fall back to text-only if it fails
-        }
+        // ── Layout sketch abandoned ────────────────────────────────────────
+        // Flux img2img treats abstract colour blobs as visual content rather
+        // than a spatial map — producing blobs in the output. Positions are
+        // communicated through the structured text prompt instead.
 
         const res = await fetch(
           `/api/projects/${projectId}/canvas/synthesize`,
@@ -286,7 +236,6 @@ export const GeographyCanvas = forwardRef<
               canvas_width: size.width,
               canvas_height: size.height,
               existing_image_url: sceneryImageUrl ?? undefined,
-              layout_dataurl: layoutDataUrl,
             }),
           },
         );
