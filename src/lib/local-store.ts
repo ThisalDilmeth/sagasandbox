@@ -25,17 +25,23 @@ async function blobRead<T>(key: string): Promise<T> {
   const { list } = await import("@vercel/blob")
   try {
     const { blobs } = await list({ prefix: `sagasandbox/${key}`, limit: 1 })
-    console.log(`[blobRead] key=${key} blobs=${blobs.length}`, blobs.map(b => ({ pathname: b.pathname, url: b.url })))
-    if (!blobs.length) return [] as unknown as T
-    // Use blob.url (not downloadUrl) with Bearer auth — private store requires the token header
-    const res = await fetch(blobs[0].url, {
+    if (!blobs.length) {
+      console.log(`[blobRead] MISS key=${key}`)
+      return [] as unknown as T
+    }
+    const blobUrl = blobs[0].url
+    const res = await fetch(blobUrl, {
       cache: "no-store",
       headers: { Authorization: `Bearer ${process.env.BLOB_READ_WRITE_TOKEN}` },
     })
-    console.log(`[blobRead] fetch status=${res.status} key=${key}`)
-    if (!res.ok) return [] as unknown as T
-    const json = await res.json() as T
-    console.log(`[blobRead] parsed ok key=${key} isArray=${Array.isArray(json)} len=${Array.isArray(json) ? (json as unknown[]).length : 'n/a'}`)
+    if (!res.ok) {
+      console.error(`[blobRead] HTTP ${res.status} key=${key}`)
+      return [] as unknown as T
+    }
+    const text = await res.text()
+    const json = JSON.parse(text) as T
+    const ids = Array.isArray(json) ? (json as {id?: string}[]).map(x => x?.id?.slice(0,8)).join(',') : 'not-array'
+    console.log(`[blobRead] OK key=${key} len=${Array.isArray(json) ? (json as unknown[]).length : '?'} ids=[${ids}]`)
     return json
   } catch (err) {
     console.error(`[blobRead] EXCEPTION key=${key}`, String(err))
@@ -45,12 +51,16 @@ async function blobRead<T>(key: string): Promise<T> {
 
 async function blobWrite<T>(key: string, data: T): Promise<void> {
   const { put } = await import("@vercel/blob")
-  await put(`sagasandbox/${key}`, JSON.stringify(data, null, 2), {
+  const body = JSON.stringify(data, null, 2)
+  const ids = Array.isArray(data) ? (data as {id?: string}[]).map(x => x?.id?.slice(0,8)).join(',') : 'not-array'
+  console.log(`[blobWrite] START key=${key} len=${Array.isArray(data) ? (data as unknown[]).length : '?'} ids=[${ids}]`)
+  const result = await put(`sagasandbox/${key}`, body, {
     access: "private",
     contentType: "application/json",
     addRandomSuffix: false,
     allowOverwrite: true,
   })
+  console.log(`[blobWrite] DONE key=${key} url=${result.url}`)
 }
 
 async function blobDelete(key: string): Promise<void> {
