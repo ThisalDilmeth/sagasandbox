@@ -11,6 +11,5 @@ export default async function StudioIndexPage() {
     style_config: null,
     canvas_state: null,
   });
-  console.log(`[studio/index] created project id=${project.id} redirecting`)
   redirect(`/studio/${project.id}`);
 }

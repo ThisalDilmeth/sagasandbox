@@ -21,46 +21,45 @@ const USE_BLOB = !!process.env.BLOB_READ_WRITE_TOKEN
 
 // ── Blob mode (Vercel production) ─────────────────────────────────────────────
 
-async function blobRead<T>(key: string): Promise<T> {
+async function blobFetch(key: string): Promise<Response | null> {
   const { list } = await import("@vercel/blob")
+  const { blobs } = await list({ prefix: `sagasandbox/${key}`, limit: 1 })
+  if (!blobs.length) return null
+  const res = await fetch(blobs[0].url, {
+    cache: "no-store",
+    headers: { Authorization: `Bearer ${process.env.BLOB_READ_WRITE_TOKEN}` },
+  })
+  return res.ok ? res : null
+}
+
+async function blobRead<T>(key: string): Promise<T> {
   try {
-    const { blobs } = await list({ prefix: `sagasandbox/${key}`, limit: 1 })
-    if (!blobs.length) {
-      console.log(`[blobRead] MISS key=${key}`)
-      return [] as unknown as T
-    }
-    const blobUrl = blobs[0].url
-    const res = await fetch(blobUrl, {
-      cache: "no-store",
-      headers: { Authorization: `Bearer ${process.env.BLOB_READ_WRITE_TOKEN}` },
-    })
-    if (!res.ok) {
-      console.error(`[blobRead] HTTP ${res.status} key=${key}`)
-      return [] as unknown as T
-    }
-    const text = await res.text()
-    const json = JSON.parse(text) as T
-    const ids = Array.isArray(json) ? (json as {id?: string}[]).map(x => x?.id?.slice(0,8)).join(',') : 'not-array'
-    console.log(`[blobRead] OK key=${key} len=${Array.isArray(json) ? (json as unknown[]).length : '?'} ids=[${ids}]`)
-    return json
-  } catch (err) {
-    console.error(`[blobRead] EXCEPTION key=${key}`, String(err))
+    const res = await blobFetch(key)
+    if (!res) return [] as unknown as T
+    return (await res.json()) as T
+  } catch {
     return [] as unknown as T
+  }
+}
+
+async function blobReadOne<T>(key: string): Promise<T | null> {
+  try {
+    const res = await blobFetch(key)
+    if (!res) return null
+    return (await res.json()) as T
+  } catch {
+    return null
   }
 }
 
 async function blobWrite<T>(key: string, data: T): Promise<void> {
   const { put } = await import("@vercel/blob")
-  const body = JSON.stringify(data, null, 2)
-  const ids = Array.isArray(data) ? (data as {id?: string}[]).map(x => x?.id?.slice(0,8)).join(',') : 'not-array'
-  console.log(`[blobWrite] START key=${key} len=${Array.isArray(data) ? (data as unknown[]).length : '?'} ids=[${ids}]`)
-  const result = await put(`sagasandbox/${key}`, body, {
+  await put(`sagasandbox/${key}`, JSON.stringify(data, null, 2), {
     access: "private",
     contentType: "application/json",
     addRandomSuffix: false,
     allowOverwrite: true,
   })
-  console.log(`[blobWrite] DONE key=${key} url=${result.url}`)
 }
 
 async function blobDelete(key: string): Promise<void> {
@@ -92,6 +91,16 @@ async function fsRead<T>(file: string): Promise<T> {
   }
 }
 
+async function fsReadOne<T>(file: string): Promise<T | null> {
+  await fs.mkdir(DATA_DIR, { recursive: true })
+  try {
+    const raw = await fs.readFile(path.join(DATA_DIR, file), "utf8")
+    return JSON.parse(raw) as T
+  } catch {
+    return null
+  }
+}
+
 async function fsWrite<T>(file: string, data: T): Promise<void> {
   await fs.mkdir(DATA_DIR, { recursive: true })
   await fs.writeFile(
@@ -114,6 +123,9 @@ async function fsDelete(file: string): Promise<void> {
 function readJson<T>(key: string): Promise<T> {
   return USE_BLOB ? blobRead<T>(key) : fsRead<T>(key)
 }
+function readOne<T>(key: string): Promise<T | null> {
+  return USE_BLOB ? blobReadOne<T>(key) : fsReadOne<T>(key)
+}
 function writeJson<T>(key: string, data: T): Promise<void> {
   return USE_BLOB ? blobWrite(key, data) : fsWrite(key, data)
 }
@@ -128,14 +140,13 @@ export async function listProjects(): Promise<Project[]> {
 }
 
 export async function getProject(id: string): Promise<Project | null> {
-  const projects = await listProjects()
-  return projects.find((p) => p.id === id) ?? null
+  // Read from per-project file — no dependency on the shared list (avoids stale reads)
+  return readOne<Project>(`project-${id}.json`)
 }
 
 export async function createProject(
   data: Omit<ProjectInsert, "owner_id">,
 ): Promise<Project> {
-  const projects = await listProjects()
   const now = new Date().toISOString()
   const project: Project = {
     id: randomUUID(),
@@ -148,8 +159,16 @@ export async function createProject(
     created_at: now,
     updated_at: now,
   }
-  projects.push(project)
-  await writeJson("projects.json", projects)
+  // Write per-project file first — this is what getProject reads, no race condition
+  await writeJson(`project-${project.id}.json`, project)
+  // Best-effort update of the shared index used by listProjects
+  try {
+    const projects = await readJson<Project[]>("projects.json")
+    projects.push(project)
+    await writeJson("projects.json", projects)
+  } catch {
+    // list update failed; individual file still exists so getProject works
+  }
   return project
 }
 
@@ -157,18 +176,30 @@ export async function updateProject(
   id: string,
   patch: Partial<Omit<Project, "id" | "created_at">>,
 ): Promise<Project | null> {
-  const projects = await listProjects()
-  const idx = projects.findIndex((p) => p.id === id)
-  if (idx === -1) return null
-  projects[idx] = { ...projects[idx], ...patch, updated_at: new Date().toISOString() }
-  await writeJson("projects.json", projects)
-  return projects[idx]
+  const existing = await getProject(id)
+  if (!existing) return null
+  const updated: Project = { ...existing, ...patch, updated_at: new Date().toISOString() }
+  // Write per-project file
+  await writeJson(`project-${id}.json`, updated)
+  // Best-effort update of shared list
+  try {
+    const projects = await readJson<Project[]>("projects.json")
+    const idx = projects.findIndex((p) => p.id === id)
+    if (idx !== -1) {
+      projects[idx] = updated
+      await writeJson("projects.json", projects)
+    }
+  } catch {
+    // list update failed; per-project file is up to date
+  }
+  return updated
 }
 
 export async function deleteProject(id: string): Promise<void> {
-  const projects = (await listProjects()).filter((p) => p.id !== id)
+  const projects = (await readJson<Project[]>("projects.json")).filter((p) => p.id !== id)
   await writeJson("projects.json", projects)
   await Promise.allSettled([
+    deleteJson(`project-${id}.json`),
     deleteJson(`pins-${id}.json`),
     deleteJson(`events-${id}.json`),
     deleteJson(`characters-${id}.json`),
