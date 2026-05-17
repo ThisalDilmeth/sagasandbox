@@ -1,9 +1,10 @@
 /**
- * Local filesystem store — replaces Supabase for fully offline operation.
- * Data lives in <repo>/.data/ (gitignored). One JSON file per collection per project.
+ * Dual-mode store:
+ *   – Local dev  (no BLOB_READ_WRITE_TOKEN): reads/writes JSON files in .data/
+ *   – Production (BLOB_READ_WRITE_TOKEN set): reads/writes JSON blobs via @vercel/blob
+ *
+ * The public API is identical in both modes, so no call-site changes are needed.
  */
-import { promises as fs } from "fs"
-import path from "path"
 import { randomUUID } from "crypto"
 import type {
   Project,
@@ -14,14 +15,52 @@ import type {
   Export,
 } from "@/types/app"
 
-const DATA_DIR = path.join(process.cwd(), ".data")
+// ─── Storage backend ──────────────────────────────────────────────────────────
 
-async function ensureDir() {
-  await fs.mkdir(DATA_DIR, { recursive: true })
+const USE_BLOB = !!process.env.BLOB_READ_WRITE_TOKEN
+
+// ── Blob mode (Vercel production) ─────────────────────────────────────────────
+
+async function blobRead<T>(key: string): Promise<T> {
+  const { head } = await import("@vercel/blob")
+  try {
+    const meta = await head(`sagasandbox/${key}`)
+    const res = await fetch(meta.url, { cache: "no-store" })
+    if (!res.ok) return [] as unknown as T
+    return (await res.json()) as T
+  } catch {
+    return [] as unknown as T
+  }
 }
 
-async function readJson<T>(file: string): Promise<T> {
-  await ensureDir()
+async function blobWrite<T>(key: string, data: T): Promise<void> {
+  const { put } = await import("@vercel/blob")
+  await put(`sagasandbox/${key}`, JSON.stringify(data, null, 2), {
+    access: "public",
+    contentType: "application/json",
+    addRandomSuffix: false,
+  })
+}
+
+async function blobDelete(key: string): Promise<void> {
+  const { head, del } = await import("@vercel/blob")
+  try {
+    const meta = await head(`sagasandbox/${key}`)
+    await del(meta.url)
+  } catch {
+    // already gone
+  }
+}
+
+// ── Filesystem mode (local dev) ───────────────────────────────────────────────
+
+import { promises as fs } from "fs"
+import path from "path"
+
+const DATA_DIR = path.join(process.cwd(), ".data")
+
+async function fsRead<T>(file: string): Promise<T> {
+  await fs.mkdir(DATA_DIR, { recursive: true })
   try {
     const raw = await fs.readFile(path.join(DATA_DIR, file), "utf8")
     return JSON.parse(raw) as T
@@ -30,9 +69,33 @@ async function readJson<T>(file: string): Promise<T> {
   }
 }
 
-async function writeJson<T>(file: string, data: T) {
-  await ensureDir()
-  await fs.writeFile(path.join(DATA_DIR, file), JSON.stringify(data, null, 2), "utf8")
+async function fsWrite<T>(file: string, data: T): Promise<void> {
+  await fs.mkdir(DATA_DIR, { recursive: true })
+  await fs.writeFile(
+    path.join(DATA_DIR, file),
+    JSON.stringify(data, null, 2),
+    "utf8",
+  )
+}
+
+async function fsDelete(file: string): Promise<void> {
+  try {
+    await fs.unlink(path.join(DATA_DIR, file))
+  } catch {
+    // already gone
+  }
+}
+
+// ── Unified helpers ───────────────────────────────────────────────────────────
+
+function readJson<T>(key: string): Promise<T> {
+  return USE_BLOB ? blobRead<T>(key) : fsRead<T>(key)
+}
+function writeJson<T>(key: string, data: T): Promise<void> {
+  return USE_BLOB ? blobWrite(key, data) : fsWrite(key, data)
+}
+function deleteJson(key: string): Promise<void> {
+  return USE_BLOB ? blobDelete(key) : fsDelete(key)
 }
 
 // ─── Projects ─────────────────────────────────────────────────────────────────
@@ -82,12 +145,11 @@ export async function updateProject(
 export async function deleteProject(id: string): Promise<void> {
   const projects = (await listProjects()).filter((p) => p.id !== id)
   await writeJson("projects.json", projects)
-  // cascade: remove related collections
   await Promise.allSettled([
-    fs.unlink(path.join(DATA_DIR, `pins-${id}.json`)),
-    fs.unlink(path.join(DATA_DIR, `events-${id}.json`)),
-    fs.unlink(path.join(DATA_DIR, `characters-${id}.json`)),
-    fs.unlink(path.join(DATA_DIR, `exports-${id}.json`)),
+    deleteJson(`pins-${id}.json`),
+    deleteJson(`events-${id}.json`),
+    deleteJson(`characters-${id}.json`),
+    deleteJson(`exports-${id}.json`),
   ])
 }
 

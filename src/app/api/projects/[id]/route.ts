@@ -11,6 +11,8 @@ import {
 } from "@/lib/local-store";
 import { falSubscribeImage, buildPrompt, projectStyleConfig } from "@/lib/fal";
 
+export const maxDuration = 60;
+
 type RouteContext = { params: Promise<{ id: string }> };
 
 export async function GET(_request: Request, context: RouteContext) {
@@ -54,10 +56,7 @@ export async function PATCH(request: Request, context: RouteContext) {
 
     if (body.cascade) {
       const styleConfig = projectStyleConfig(project);
-      const [pins, events] = await Promise.all([
-        listPins(id),
-        listEvents(id),
-      ]);
+      const [pins, events] = await Promise.all([listPins(id), listEvents(id)]);
 
       await Promise.allSettled([
         ...pins.map(async (pin) => {
@@ -69,10 +68,7 @@ export async function PATCH(request: Request, context: RouteContext) {
             });
             const imageUrl = await falSubscribeImage({ prompt });
             if (imageUrl) {
-              await updatePin(id, pin.id, {
-                generated_image_url: imageUrl,
-                gen_status: "done",
-              });
+              await updatePin(id, pin.id, { generated_image_url: imageUrl, gen_status: "done" });
               queued++;
             }
           } catch {
@@ -88,10 +84,7 @@ export async function PATCH(request: Request, context: RouteContext) {
             });
             const imageUrl = await falSubscribeImage({ prompt });
             if (imageUrl) {
-              await updateEvent(id, event.id, {
-                generated_image_url: imageUrl,
-                gen_status: "done",
-              });
+              await updateEvent(id, event.id, { generated_image_url: imageUrl, gen_status: "done" });
               queued++;
             }
           } catch {

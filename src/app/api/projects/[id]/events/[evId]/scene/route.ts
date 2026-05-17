@@ -3,19 +3,10 @@ import { jsonError } from "@/lib/api-auth";
 import { getProject, getEvent, updateEvent } from "@/lib/local-store";
 import { falSubscribeImage, projectStyleConfig } from "@/lib/fal";
 
+export const maxDuration = 60;
+
 type RouteContext = { params: Promise<{ id: string; evId: string }> };
 
-/**
- * POST /api/projects/:id/events/:evId/scene
- *
- * Generates a scene image for a single timeline card.
- * Unlike the shared geography canvas synthesis, this generates a fully
- * self-contained cinematic frame for a specific narrative moment.
- *
- * Body: { scene_keywords: string }
- *   scene_keywords — comma-separated or freeform description of what should
- *   appear in this scene, e.g. "erupting volcano, hero running, dark cave".
- */
 export async function POST(request: Request, context: RouteContext) {
   const { id: projectId, evId } = await context.params;
   try {
@@ -31,7 +22,6 @@ export async function POST(request: Request, context: RouteContext) {
 
     const styleConfig = projectStyleConfig(project);
 
-    // ── Build style clause ────────────────────────────────────────────────────
     const styleParts: string[] = [];
     if (styleConfig.aesthetic_style) styleParts.push(styleConfig.aesthetic_style);
     if (styleConfig.aesthetic && styleConfig.aesthetic !== styleConfig.aesthetic_style)
@@ -40,16 +30,8 @@ export async function POST(request: Request, context: RouteContext) {
     if (styleConfig.tone)  styleParts.push(styleConfig.tone);
     const styleClause = styleParts.length ? styleParts.join(", ") : "cinematic fantasy";
 
-    // ── Build scene description ───────────────────────────────────────────────
-    // Combine the event title/description with the user's scene keywords so the
-    // image reflects both the narrative context and the specific visual content.
-    const narrative = [event.title, event.description]
-      .filter(Boolean)
-      .join(" — ");
-
-    const visualContent = scene_keywords.length
-      ? scene_keywords
-      : narrative;   // fall back to event text if no keywords given
+    const narrative = [event.title, event.description].filter(Boolean).join(" — ");
+    const visualContent = scene_keywords.length ? scene_keywords : narrative;
 
     const sceneBody =
       `A single cinematic scene: ${visualContent}. ` +
@@ -62,7 +44,6 @@ export async function POST(request: Request, context: RouteContext) {
       `Masterpiece-quality concept art, 8K render, rich colour grading, ` +
       `cinematic depth-of-field — no text overlays, no UI elements.`;
 
-    // Mark as generating before the (slow) fal call so the UI can show a spinner
     await updateEvent(projectId, evId, {
       scene_keywords: scene_keywords || null,
       gen_status: "generating",

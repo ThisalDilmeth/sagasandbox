@@ -4,9 +4,7 @@ import { getProject, updateProject } from "@/lib/local-store";
 import { falSubscribeImage, projectStyleConfig } from "@/lib/fal";
 import { fal } from "@fal-ai/client";
 
-if (process.env.FAL_KEY) {
-  fal.config({ credentials: process.env.FAL_KEY });
-}
+export const maxDuration = 60;
 
 type RouteContext = { params: Promise<{ id: string }> };
 
@@ -186,4 +184,5 @@ export async function POST(request: Request, context: RouteContext) {
   } catch (err) {
     return jsonError(err instanceof Error ? err.message : "Unknown error");
   }
+  fal.config({ credentials: process.env.FAL_KEY });
 }
