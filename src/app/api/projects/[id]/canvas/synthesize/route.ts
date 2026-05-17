@@ -87,6 +87,7 @@ export async function POST(request: Request, context: RouteContext) {
 
     // ── Build prompt ─────────────────────────────────────────────────────────
     const pins = body.pins ?? [];
+    const hasLayout   = !!body.layout_dataurl && !body.existing_image_url;
 
     let sceneBody: string;
 
@@ -95,6 +96,18 @@ export async function POST(request: Request, context: RouteContext) {
         `A sweeping ${genreWord} landscape — wide-angle establishing shot. ` +
         `Dramatic atmospheric lighting, volumetric fog, rich environmental detail. ` +
         `Matte-painting quality.`;
+    } else if (hasLayout) {
+      // The client sent a semantic scene sketch (sky/ground background with
+      // iconic silhouettes at the correct pin positions). We use it as an
+      // img2img anchor so Flux follows the spatial layout while the prompt
+      // only describes visual style — the sketch already encodes positions.
+      const checklist = pins.map(p => p.label.toUpperCase()).join(" · ");
+      sceneBody =
+        `Transform this rough sketch into a ${genreWord} photorealistic scene. ` +
+        `Every silhouette in the sketch must become a fully realised ` +
+        `${genreWord} subject in EXACTLY the same screen position. ` +
+        `Required subjects (ALL must be visible): ${checklist}. ` +
+        `${styleClause} atmosphere, dramatic volumetric lighting, no UI chrome, no text overlays.`;
     } else {
       // Sort pins left→right so the description reads like a natural spatial
       // scan, which matches how Flux was trained on compositional captions.
@@ -163,22 +176,35 @@ export async function POST(request: Request, context: RouteContext) {
       `Masterpiece-quality environment art, 8K ultra-detailed, rich colour grading.`;
 
     // ── Determine img2img anchor ─────────────────────────────────────────────
-    // Only use img2img for RE-SYNTHESIS (existing rendered scene).
-    // Abstract layout sketches are NOT used as anchors — Flux treats coloured
-    // shapes as visual content rather than a spatial map, producing blobs.
+    // Priority order:
+    //   1. existing_image_url → re-synthesis (keep existing composition)
+    //   2. layout_dataurl    → first-generation sketch-to-scene
+    // Abstract colour blobs do NOT work here; the semantic scene sketch
+    // (sky/ground + object silhouettes) DOES because Flux was trained on
+    // rough sketch → photorealistic conversions.
     let anchorCdnUrl: string | undefined;
+    let anchorStrength = 0.82; // sketch-to-scene strength
 
     if (body.existing_image_url && process.env.FAL_KEY) {
       try {
         const resp = await fetch(body.existing_image_url);
         if (resp.ok) {
           const buffer = await resp.arrayBuffer();
-          anchorCdnUrl = await fal.storage.upload(
-            new Blob([buffer], { type: "image/png" }),
-          );
+          anchorCdnUrl   = await fal.storage.upload(new Blob([buffer], { type: "image/png" }));
+          anchorStrength = 0.55; // keep existing composition, integrate new subjects
         }
       } catch (err) {
         console.warn("Existing image upload failed — falling back to t2i", err);
+      }
+    } else if (body.layout_dataurl && process.env.FAL_KEY) {
+      try {
+        const comma  = body.layout_dataurl.indexOf(",");
+        const base64 = body.layout_dataurl.slice(comma + 1);
+        const buffer = Buffer.from(base64, "base64");
+        anchorCdnUrl   = await fal.storage.upload(new Blob([buffer], { type: "image/jpeg" }));
+        anchorStrength = 0.82; // transform sketch style; spatial structure must be preserved
+      } catch (err) {
+        console.warn("Layout sketch upload failed — falling back to t2i", err);
       }
     }
 
@@ -186,9 +212,7 @@ export async function POST(request: Request, context: RouteContext) {
       prompt,
       model:    anchorCdnUrl ? "fal-ai/flux/dev/image-to-image" : "fal-ai/flux/dev",
       imageUrl: anchorCdnUrl,
-      // 0.55 gives enough creative freedom to add new subjects while
-      // keeping the existing composition roughly intact.
-      strength: 0.55,
+      strength: anchorStrength,
       width:    1280,
       height:   720,
     });
