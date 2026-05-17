@@ -38,11 +38,18 @@ export interface GeographyCanvasProps {
   userId?: string;
   apiAvailable?: boolean;
   highlightedPinId?: string | null;
+  /** Called when synthesis completes successfully with the generated image URL. */
+  onSynthesized?: (url: string) => void;
+  /** Called whenever the synthesis loading state changes. */
+  onSynthesizingChange?: (synthesizing: boolean) => void;
 }
 
 export interface GeographyCanvasHandle {
   applyCanvasOp: (op: CanvasOpPayload) => void;
   hydrateFromState: (state: Record<string, unknown> | null | undefined) => void;
+  /** Programmatically trigger the same synthesis flow as the toolbar button,
+   *  using the canvas's current viewport for correct coordinate mapping. */
+  triggerSynthesize: () => void;
 }
 
 interface BrushLine {
@@ -93,6 +100,8 @@ export const GeographyCanvas = forwardRef<
     userId = "local",
     apiAvailable = true,
     highlightedPinId = null,
+    onSynthesized,
+    onSynthesizingChange,
   },
   ref,
 ) {
@@ -190,10 +199,68 @@ export const GeographyCanvas = forwardRef<
     [userId],
   );
 
+  // ── Shared synthesize logic ─────────────────────────────────────────────────
+  // Used by both the toolbar button and the external triggerSynthesize handle so
+  // the coordinate transform is ALWAYS done with the live viewport values.
+  const runSynthesize = useCallback(() => {
+    if (synthesizing) return;
+    setSynthesizing(true);
+    onSynthesizingChange?.(true);
+    const capturedBounds: SceneryBounds = {
+      x: -stagePos.x / scale,
+      y: -stagePos.y / scale,
+      w: size.width / scale,
+      h: size.height / scale,
+    };
+    void (async () => {
+      try {
+        const pinRefs = pins.map((p) => ({
+          label: p.label,
+          description: p.description,
+          canvas_x: p.canvas_x * scale + stagePos.x,
+          canvas_y: p.canvas_y * scale + stagePos.y,
+        }));
+        const res = await fetch(
+          `/api/projects/${projectId}/canvas/synthesize`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              pins: pinRefs,
+              canvas_width: size.width,
+              canvas_height: size.height,
+              existing_image_url: sceneryImageUrl ?? undefined,
+            }),
+          },
+        );
+        if (!res.ok) {
+          const body = (await res.json()) as { error?: string };
+          throw new Error(body.error ?? "Synthesis failed");
+        }
+        const data = (await res.json()) as { image_url?: string | null };
+        if (data.image_url) {
+          setSceneryImageUrl(data.image_url);
+          setSceneryBounds(capturedBounds);
+          onSynthesized?.(data.image_url);
+        } else {
+          toastError("Synthesis returned no image — check FAL_KEY");
+        }
+      } catch (err) {
+        toastError(err instanceof Error ? err.message : "Synthesis failed");
+      } finally {
+        setSynthesizing(false);
+        onSynthesizingChange?.(false);
+      }
+    })();
+  }, [
+    synthesizing, stagePos, scale, size, pins, projectId,
+    sceneryImageUrl, onSynthesized, onSynthesizingChange,
+  ]);
+
   useImperativeHandle(
     ref,
-    () => ({ applyCanvasOp, hydrateFromState }),
-    [applyCanvasOp, hydrateFromState],
+    () => ({ applyCanvasOp, hydrateFromState, triggerSynthesize: runSynthesize }),
+    [applyCanvasOp, hydrateFromState, runSynthesize],
   );
 
   // Hydrate canvas state and restore any previously synthesised scenery
@@ -459,63 +526,7 @@ export const GeographyCanvas = forwardRef<
           <button
             type="button"
             disabled={synthesizing}
-            onClick={() => {
-              setSynthesizing(true);
-              // Capture viewport world bounds at synthesis time so the generated
-              // image is placed at exactly the region that was visible.
-              const capturedBounds: SceneryBounds = {
-                x: -stagePos.x / scale,
-                y: -stagePos.y / scale,
-                w: size.width / scale,
-                h: size.height / scale,
-              };
-              void (async () => {
-                try {
-                  // Convert each pin from world-space coordinates to screen-space
-                  // (image-relative) coordinates so they align with the captured
-                  // viewport. Formula: screen = world * scale + stagePos
-                  // This ensures positions are correct even when the canvas is
-                  // zoomed or panned from the default view.
-                  const pinRefs = pins.map((p) => ({
-                    label: p.label,
-                    description: p.description,
-                    canvas_x: p.canvas_x * scale + stagePos.x,
-                    canvas_y: p.canvas_y * scale + stagePos.y,
-                  }));
-
-                  const res = await fetch(
-                    `/api/projects/${projectId}/canvas/synthesize`,
-                    {
-                      method: "POST",
-                      headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({
-                        pins: pinRefs,
-                        canvas_width: size.width,
-                        canvas_height: size.height,
-                        // Pass current scenery so re-synthesis uses img2img —
-                        // this locks existing landmark positions in place.
-                        existing_image_url: sceneryImageUrl ?? undefined,
-                      }),
-                    },
-                  );
-                  if (!res.ok) {
-                    const body = (await res.json()) as { error?: string };
-                    throw new Error(body.error ?? "Synthesis failed");
-                  }
-                  const data = (await res.json()) as { image_url?: string | null };
-                  if (data.image_url) {
-                    setSceneryImageUrl(data.image_url);
-                    setSceneryBounds(capturedBounds);
-                  } else {
-                    toastError("Synthesis returned no image — check FAL_KEY");
-                  }
-                } catch (err) {
-                  toastError(err instanceof Error ? err.message : "Synthesis failed");
-                } finally {
-                  setSynthesizing(false);
-                }
-              })();
-            }}
+            onClick={runSynthesize}
             className={cn(
               "rounded-md px-3 py-1.5 text-xs font-medium",
               synthesizing
@@ -528,7 +539,7 @@ export const GeographyCanvas = forwardRef<
         ) : null}
       </div>
     ),
-    [tool, apiAvailable, projectId, pins, size, synthesizing, stagePos, scale, pinsVisible],
+    [tool, apiAvailable, runSynthesize, pins, size, synthesizing, pinsVisible],
   );
 
   return (

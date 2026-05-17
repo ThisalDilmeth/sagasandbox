@@ -1,10 +1,11 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { MapPin, Plus, Trash2, Pencil, Check, X, Download, Sparkles } from "lucide-react";
 import type { LocationPin, Project } from "@/types/app";
+import type { GeographyCanvasHandle } from "@/components/canvas/GeographyCanvas";
 import { ToastHost } from "@/components/shared/ToastHost";
 import { RemoteImage } from "@/components/shared/RemoteImage";
 import { cn } from "@/lib/cn";
@@ -152,16 +153,14 @@ export interface StudioWorkspaceProps {
 
 export function StudioWorkspace({ project, initialPins }: StudioWorkspaceProps) {
   const [pins, setPins] = useState(initialPins);
-  const [selectedPin, setSelectedPin] = useState<LocationPin | null>(null);
   const [styleId, setStyleId] = useState("photorealistic");
-  const [projectTheme, setProjectTheme] = useState(project.theme);
-  const [projectStyle, setProjectStyle] = useState(project.aesthetic_style);
   const [generatedImageUrl, setGeneratedImageUrl] = useState<string | null>(null);
   const [synthesizing, setSynthesizing] = useState(false);
-  const [showResult, setShowResult] = useState(false);
 
-  const handlePinSelect = useCallback((pin: LocationPin) => {
-    setSelectedPin(pin);
+  const canvasRef = useRef<GeographyCanvasHandle>(null);
+
+  const handlePinSelect = useCallback((_pin: LocationPin) => {
+    // no-op in studio — pin list in sidebar handles selection
   }, []);
 
   const handlePinsChange = useCallback(
@@ -175,8 +174,6 @@ export function StudioWorkspace({ project, initialPins }: StudioWorkspaceProps) 
     const preset = STYLE_PRESETS.find((p) => p.id === id);
     if (!preset) return;
     setStyleId(id);
-    setProjectTheme(preset.theme);
-    setProjectStyle(preset.aesthetic_style);
     try {
       await fetch(`/api/projects/${project.id}`, {
         method: "PATCH",
@@ -184,41 +181,16 @@ export function StudioWorkspace({ project, initialPins }: StudioWorkspaceProps) 
         body: JSON.stringify({ theme: preset.theme, aesthetic_style: preset.aesthetic_style }),
       });
     } catch {
-      // non-critical — style is applied locally regardless
+      // non-critical
     }
   }
 
-  async function handleGenerate() {
+  function handleGenerate() {
     if (pins.length === 0) {
       toastError("Place at least one pin on the canvas first");
       return;
     }
-    setSynthesizing(true);
-    try {
-      const res = await fetch(`/api/projects/${project.id}/canvas/synthesize`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          pins: pins.map((p) => ({
-            label: p.label,
-            description: p.description,
-            canvas_x: p.canvas_x,
-            canvas_y: p.canvas_y,
-          })),
-          canvas_width: 1280,
-          canvas_height: 720,
-          existing_image_url: generatedImageUrl ?? undefined,
-        }),
-      });
-      if (!res.ok) throw new Error(await readApiError(res, "Generation failed"));
-      const { image_url } = (await res.json()) as { image_url: string };
-      setGeneratedImageUrl(image_url);
-      setShowResult(true);
-    } catch (err) {
-      toastError(err instanceof Error ? err.message : "Generation failed");
-    } finally {
-      setSynthesizing(false);
-    }
+    canvasRef.current?.triggerSynthesize();
   }
 
   return (
@@ -254,6 +226,7 @@ export function StudioWorkspace({ project, initialPins }: StudioWorkspaceProps) 
         {/* Canvas */}
         <div className="relative flex-1">
           <GeographyCanvas
+            ref={canvasRef}
             projectId={project.id}
             pins={pins}
             userId="local"
@@ -261,8 +234,10 @@ export function StudioWorkspace({ project, initialPins }: StudioWorkspaceProps) 
             onPinsChange={handlePinsChange}
             onPinSelect={handlePinSelect}
             onCanvasChange={() => {
-              /* no-op for studio — canvas state not persisted */
+              /* no-op for studio */
             }}
+            onSynthesized={(url) => setGeneratedImageUrl(url)}
+            onSynthesizingChange={(v) => setSynthesizing(v)}
           />
         </div>
 
@@ -374,15 +349,6 @@ export function StudioWorkspace({ project, initialPins }: StudioWorkspaceProps) 
                 <p className="text-[10px] font-semibold uppercase tracking-widest text-[#4b5563]">
                   Last result
                 </p>
-                <div className="flex gap-1">
-                  <button
-                    type="button"
-                    onClick={() => setShowResult((v) => !v)}
-                    className="rounded px-2 py-0.5 text-[10px] text-[#6b7280] hover:text-white"
-                  >
-                    {showResult ? "Hide" : "Show on canvas"}
-                  </button>
-                </div>
               </div>
               <div className="relative overflow-hidden rounded-lg border border-[#2a2a2e]">
                 <RemoteImage
