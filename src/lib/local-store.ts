@@ -22,12 +22,13 @@ const USE_BLOB = !!process.env.BLOB_READ_WRITE_TOKEN
 // ── Blob mode (Vercel production) ─────────────────────────────────────────────
 
 async function blobRead<T>(key: string): Promise<T> {
-  const { get } = await import("@vercel/blob")
+  const { list } = await import("@vercel/blob")
   try {
-    const result = await get(`sagasandbox/${key}`, { access: "private" })
-    if (!result) return [] as unknown as T
-    const response = new Response(result.stream)
-    return (await response.json()) as T
+    const { blobs } = await list({ prefix: `sagasandbox/${key}`, limit: 1 })
+    if (!blobs.length) return [] as unknown as T
+    const res = await fetch(blobs[0].downloadUrl, { cache: "no-store" })
+    if (!res.ok) return [] as unknown as T
+    return (await res.json()) as T
   } catch {
     return [] as unknown as T
   }
