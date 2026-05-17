@@ -66,14 +66,27 @@ export async function POST(request: Request, context: RouteContext) {
     const ch = body.canvas_height ?? 720;
 
     // ── Style clause ──────────────────────────────────────────────────────────
-    const styleParts: string[] = [];
-    if (styleConfig.aesthetic_style) styleParts.push(styleConfig.aesthetic_style);
-    if (styleConfig.aesthetic && styleConfig.aesthetic !== styleConfig.aesthetic_style)
-      styleParts.push(styleConfig.aesthetic);
-    if (styleConfig.theme) styleParts.push(styleConfig.theme.replace(/_/g, " "));
-    if (styleConfig.tone)  styleParts.push(styleConfig.tone);
-    const styleClause = styleParts.length ? styleParts.join(", ") : "cinematic photorealistic";
-    const genreWord   = styleConfig.theme?.replace(/_/g, " ") ?? "realistic";
+    // Prefer the rich prompt_descriptor stored by the Studio style picker.
+    // Fall back to assembling from aesthetic_style + theme for legacy projects.
+    const rawCfg = typeof project.style_config === "object" && project.style_config !== null
+      ? (project.style_config as Record<string, unknown>)
+      : {};
+    const promptDescriptor = typeof rawCfg.prompt_descriptor === "string"
+      ? rawCfg.prompt_descriptor
+      : null;
+
+    const styleClause = promptDescriptor ?? (() => {
+      const parts: string[] = [];
+      if (styleConfig.aesthetic_style) parts.push(styleConfig.aesthetic_style);
+      if (styleConfig.aesthetic && styleConfig.aesthetic !== styleConfig.aesthetic_style)
+        parts.push(styleConfig.aesthetic);
+      if (styleConfig.theme) parts.push(styleConfig.theme.replace(/_/g, " "));
+      if (styleConfig.tone)  parts.push(styleConfig.tone);
+      return parts.length ? parts.join(", ") : "cinematic photorealistic";
+    })();
+
+    // Short genre word for inline references inside sentence fragments
+    const genreWord = styleConfig.theme?.replace(/_/g, " ") ?? "realistic";
 
     // ── Prompt ────────────────────────────────────────────────────────────────
     const pins   = body.pins ?? [];
@@ -84,8 +97,8 @@ export async function POST(request: Request, context: RouteContext) {
     if (pins.length === 0) {
       prompt =
         `${styleClause}. ` +
-        `Wide-angle photorealistic landscape, dramatic atmospheric lighting, ` +
-        `volumetric fog, matte-painting quality. 8K ultra-detailed.`;
+        `Wide-angle landscape, dramatic atmospheric lighting, volumetric fog, ` +
+        `matte-painting quality. ${styleClause}. 8K ultra-detailed.`;
     } else if (body.existing_image_url) {
       // ── Re-synthesis ─────────────────────────────────────────────────────
       const entries = sorted.map((p) => {
@@ -96,16 +109,13 @@ export async function POST(request: Request, context: RouteContext) {
       const checklist = pins.map(p => p.label.toUpperCase()).join(", ");
       prompt =
         `${styleClause}. ` +
-        `Photorealistic wide-angle scene. Keep all existing scene elements exactly ` +
-        `where they are and integrate any newly added subjects. ` +
+        `Keep all existing scene elements exactly where they are and integrate ` +
+        `any newly added subjects. ` +
         `Scene subjects from left to right: ${entries.join("; ")}. ` +
         `Every subject — ${checklist} — must be clearly visible. ` +
-        `Dramatic ${genreWord} lighting, no text overlays. 8K ultra-detailed.`;
+        `${styleClause}. No text overlays. 8K ultra-detailed.`;
     } else {
       // ── First generation — pure text-to-image ────────────────────────────
-      // Build a cinematic shot-list style description. This format closely
-      // matches how Flux was trained: left-to-right scan with specific depth
-      // vocabulary and a per-subject placement sentence per object.
       const entries = sorted.map((p) => {
         const subj = subject(p.label, p.description);
         const pos  = spatialDesc(p.canvas_x / cw, p.canvas_y / ch);
@@ -113,7 +123,6 @@ export async function POST(request: Request, context: RouteContext) {
       });
       const checklist = pins.map(p => p.label.toUpperCase()).join(", ");
 
-      // Left / center / right section summary for global composition guidance
       const left   = sorted.filter(p => p.canvas_x / cw < 0.38).map(p => p.label).join(", ");
       const center = sorted.filter(p => { const x = p.canvas_x / cw; return x >= 0.38 && x < 0.62; }).map(p => p.label).join(", ");
       const right  = sorted.filter(p => p.canvas_x / cw >= 0.62).map(p => p.label).join(", ");
@@ -126,14 +135,11 @@ export async function POST(request: Request, context: RouteContext) {
 
       prompt =
         `${styleClause}. ` +
-        `A hyperrealistic wide-angle landscape photograph with a balanced ` +
-        `composition: ${sections}. ` +
+        `Wide-angle landscape: ${sections}. ` +
         `${entries.join(" ")} ` +
         `Every single subject — ${checklist} — is prominently visible in the ` +
-        `same frame simultaneously. ` +
-        `Wide field of view so no element is cropped. ` +
-        `Dramatic ${genreWord} atmosphere, volumetric lighting, rich colour ` +
-        `grading, no people, no text, no watermarks. 8K photorealistic.`;
+        `same frame simultaneously. Wide field of view so no element is cropped. ` +
+        `No people, no text, no watermarks. ${styleClause}.`;
     }
 
     // ── img2img anchor (re-synthesis only) ───────────────────────────────────

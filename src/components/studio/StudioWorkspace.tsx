@@ -21,13 +21,74 @@ const GeographyCanvas = dynamic(
 );
 
 // ── Style presets ─────────────────────────────────────────────────────────────
+// promptDescriptor: dense Flux trigger string — the stronger and more specific
+// this is, the more dramatically the model shifts its visual output.
 const STYLE_PRESETS = [
-  { id: "photorealistic",  label: "Photorealistic", theme: "photorealistic",    aesthetic_style: "cinematic photorealistic" },
-  { id: "fantasy",         label: "Fantasy",        theme: "High Fantasy",      aesthetic_style: "painterly high fantasy" },
-  { id: "cyberpunk",       label: "Cyberpunk",      theme: "Cyberpunk Noir",    aesthetic_style: "neon-lit cyberpunk" },
-  { id: "horror",          label: "Horror",         theme: "Psychological Horror", aesthetic_style: "dark atmospheric horror" },
-  { id: "watercolour",     label: "Watercolour",    theme: "photorealistic",    aesthetic_style: "soft watercolour illustration" },
-  { id: "scifi",           label: "Sci-Fi",         theme: "Sci-Fi",            aesthetic_style: "cinematic science fiction" },
+  {
+    id: "photorealistic",
+    label: "Photorealistic",
+    theme: "photorealistic",
+    aesthetic_style: "Photorealistic",
+    promptDescriptor:
+      "RAW photo, Sony Alpha 1, 85mm f/1.4 prime lens, natural golden-hour " +
+      "sunlight, ultra-sharp focus, shallow depth of field, hyper-realistic " +
+      "detail, photorealistic DSLR photograph, 8K UHD, award-winning photography",
+  },
+  {
+    id: "fantasy",
+    label: "Fantasy",
+    theme: "high_fantasy",
+    aesthetic_style: "High Fantasy",
+    promptDescriptor:
+      "epic high fantasy concept art, painterly oil painting by Greg Rutkowski " +
+      "and Artgerm, luminous magical atmosphere, rich jewel-toned palette, " +
+      "mythical ethereal glow, dramatic fantasy landscape, masterpiece fantasy " +
+      "illustration, ArtStation trending",
+  },
+  {
+    id: "cyberpunk",
+    label: "Cyberpunk",
+    theme: "cyberpunk_noir",
+    aesthetic_style: "Cyberpunk Noir",
+    promptDescriptor:
+      "cyberpunk dystopia, neon-drenched city, Blade Runner 2049 aesthetic, " +
+      "deep cyan and hot-pink neon glow, rain-slicked reflective streets, " +
+      "volumetric neon light shafts, dark futuristic noir, smog and haze, " +
+      "Roger Deakins cinematography, ultra-detailed 8K",
+  },
+  {
+    id: "horror",
+    label: "Horror",
+    theme: "psychological_horror",
+    aesthetic_style: "Dark Horror",
+    promptDescriptor:
+      "dark psychological horror, deeply unsettling atmosphere, heavily " +
+      "desaturated muted palette with sickly green tones, deep impenetrable " +
+      "shadows, eerie fog, distorted surreal environment, Stephen King meets " +
+      "HR Giger, nightmare fuel, disturbing moody cinematography",
+  },
+  {
+    id: "watercolour",
+    label: "Watercolour",
+    theme: "watercolour",
+    aesthetic_style: "Watercolour",
+    promptDescriptor:
+      "delicate watercolour painting, loose wet-on-wet washes, visible paper " +
+      "texture, bleeding colour edges, impressionistic soft brushwork, gentle " +
+      "pastel palette, Studio Ghibli watercolour background, hand-painted " +
+      "illustration, Makoto Shinkai inspired",
+  },
+  {
+    id: "scifi",
+    label: "Sci-Fi",
+    theme: "sci_fi_noir",
+    aesthetic_style: "Sci-Fi",
+    promptDescriptor:
+      "hard science fiction, Denis Villeneuve Dune aesthetic, chrome and " +
+      "carbon-fibre surfaces, vast alien landscape, dramatic bioluminescent sky, " +
+      "cosmic scale, industrial future, dust and atmosphere, cinematic sci-fi " +
+      "concept art, 8K ultra-detailed",
+  },
 ] as const;
 
 // ── Inline pin editor ─────────────────────────────────────────────────────────
@@ -178,7 +239,15 @@ export function StudioWorkspace({ project, initialPins }: StudioWorkspaceProps) 
       await fetch(`/api/projects/${project.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ theme: preset.theme, aesthetic_style: preset.aesthetic_style }),
+        body: JSON.stringify({
+          theme: preset.theme,
+          aesthetic_style: preset.aesthetic_style,
+          style_config: {
+            theme: preset.theme,
+            aesthetic_style: preset.aesthetic_style,
+            prompt_descriptor: preset.promptDescriptor,
+          },
+        }),
       });
     } catch {
       // non-critical
