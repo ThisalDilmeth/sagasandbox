@@ -17,49 +17,25 @@ interface PinRef {
   canvas_y: number;
 }
 
-/**
- * Returns a perspective-aware spatial descriptor for a canvas (x, y) point.
- *
- * The canvas is treated as a top-down 2D map of a 3D scene:
- *   • Low Y (top of canvas)  → background / distant horizon in the image
- *   • High Y (bottom)        → foreground / close-up in the image
- *   • X maps left↔right as usual
- *
- * Describing positions this way makes the generated 3D perspective scene
- * agree with where the user placed the pins.
- */
-function spatialPhrase(x: number, y: number, cw: number, ch: number): string {
-  const xPct = x / cw;
-  const yPct = y / ch;
-
-  // Horizontal position in the image (left/center/right)
-  const col =
-    xPct < 0.15 ? "far left edge" :
-    xPct < 0.38 ? "left side" :
-    xPct < 0.62 ? "center" :
-    xPct < 0.85 ? "right side" :
-                  "far right edge";
-
-  // Vertical: low canvas Y → background; high canvas Y → foreground
-  const depth =
-    yPct < 0.20 ? "distant background" :
-    yPct < 0.40 ? "mid-background" :
-    yPct < 0.60 ? "midground" :
-    yPct < 0.80 ? "mid-foreground" :
-                  "near foreground";
-
-  if (col === "center") return `the ${depth}, center of the image`;
-  return `the ${depth}, ${col} of the image`;
-}
-
 /** Constructs a vivid visual subject line from label + description. */
 function locationSubject(label: string, description?: string | null): string {
   const base = label.trim();
   const detail = description?.trim();
   if (!detail) return base;
-  // Avoid duplicating the label if description starts with it
   if (detail.toLowerCase().startsWith(base.toLowerCase())) return detail;
-  return `${base}: ${detail}`;
+  return `${base} (${detail})`;
+}
+
+/**
+ * Map a screen-space X percentage to a concrete directional word.
+ * Used in the text prompt as a secondary reinforcement of the layout image.
+ */
+function xWord(xPct: number) {
+  if (xPct < 0.18) return "far-left";
+  if (xPct < 0.38) return "left";
+  if (xPct < 0.62) return "center";
+  if (xPct < 0.82) return "right";
+  return "far-right";
 }
 
 export async function POST(request: Request, context: RouteContext) {
@@ -69,9 +45,16 @@ export async function POST(request: Request, context: RouteContext) {
       pins?: PinRef[];
       canvas_width?: number;
       canvas_height?: number;
-      /** URL of the previously generated scenery. When present we use img2img
-       *  at low strength so existing landmark positions are preserved. */
+      /** Previously generated scene — used as anchor for re-synthesis. */
       existing_image_url?: string;
+      /**
+       * Spatial layout sketch generated on the client.
+       * A JPEG data URL (data:image/jpeg;base64,...) with one coloured blob per
+       * pin at its exact screen position on a neutral grey background.
+       * Using this as the img2img seed gives Flux a reliable visual layout
+       * map — far more accurate than text position hints alone.
+       */
+      layout_dataurl?: string;
     };
 
     const project = await getProject(projectId);
@@ -83,105 +66,134 @@ export async function POST(request: Request, context: RouteContext) {
     const cw = body.canvas_width ?? 1280;
     const ch = body.canvas_height ?? 720;
 
-    // ── Style clause ──────────────────────────────────────────────────────────
+    // ── Style clause ─────────────────────────────────────────────────────────
     const styleParts: string[] = [];
     if (styleConfig.aesthetic_style) styleParts.push(styleConfig.aesthetic_style);
     if (styleConfig.aesthetic && styleConfig.aesthetic !== styleConfig.aesthetic_style)
       styleParts.push(styleConfig.aesthetic);
     if (styleConfig.theme) styleParts.push(styleConfig.theme.replace(/_/g, " "));
     if (styleConfig.tone) styleParts.push(styleConfig.tone);
-    const styleClause = styleParts.length ? styleParts.join(", ") : "cinematic fantasy";
-    const genreWord = styleConfig.theme?.replace(/_/g, " ") ?? "fantasy";
+    const styleClause = styleParts.length ? styleParts.join(", ") : "cinematic photorealistic";
+    const genreWord   = styleConfig.theme?.replace(/_/g, " ") ?? "realistic";
 
-    // ── Build prompt ──────────────────────────────────────────────────────────
+    // ── Build prompt ─────────────────────────────────────────────────────────
     const pins = body.pins ?? [];
-    const ordinals = ["ONE", "TWO", "THREE", "FOUR", "FIVE", "SIX", "SEVEN", "EIGHT"];
-    const countWord = ordinals[(pins.length || 1) - 1] ?? String(pins.length);
 
     let sceneBody: string;
 
     if (pins.length === 0) {
       sceneBody =
         `A sweeping ${genreWord} landscape — wide-angle establishing shot. ` +
-        `Dramatic atmospheric lighting, volumetric fog, rich environmental detail ` +
-        `from foreground rocks to the distant horizon. Matte-painting quality.`;
+        `Dramatic atmospheric lighting, volumetric fog, rich environmental detail. ` +
+        `Matte-painting quality.`;
     } else {
-      // Number each landmark with subject + exact position.
-      // The numbered format gives each subject equal model attention;
-      // the closing checklist reinforces recall so none are dropped.
-      const entries = pins.map((pin, i) => {
+      // ── Subject list ordered left-to-right, then top-to-bottom ──────────
+      // Sorting by X (then Y) means the text reads like a natural spatial scan
+      // which matches how diffusion models interpret left-to-right descriptions.
+      const sorted = [...pins].sort((a, b) =>
+        a.canvas_x !== b.canvas_x ? a.canvas_x - b.canvas_x : a.canvas_y - b.canvas_y,
+      );
+
+      const entries = sorted.map((pin) => {
         const subject = locationSubject(pin.label, pin.description);
-        const pos = spatialPhrase(pin.canvas_x, pin.canvas_y, cw, ch);
-        const yPct = pin.canvas_y / ch;
-        // Give Flux a rendering hint so foreground subjects are large/detailed
-        // and background subjects are small/atmospheric — consistent with how
-        // 3D perspective scenes are naturally composed.
-        const sizeHint =
-          yPct > 0.65 ? "large and prominent in the foreground" :
-          yPct > 0.40 ? "mid-sized in the midground" :
-                        "smaller and atmospheric in the background";
-        return `Landmark ${i + 1} [MUST BE RENDERED]: ${subject} — at ${pos}, rendered ${sizeHint}.`;
+        const xPct    = pin.canvas_x / cw;
+        const yPct    = pin.canvas_y / ch;
+        const xDesc   = xWord(xPct);
+        const yDesc   =
+          yPct < 0.22 ? "in the sky / upper background" :
+          yPct < 0.42 ? "in the upper midground" :
+          yPct < 0.58 ? "in the center of the frame" :
+          yPct < 0.78 ? "in the lower midground" :
+                        "in the foreground / ground level";
+        return `• ${subject} — ${xDesc} of the frame, ${yDesc}`;
       });
 
-      const checklist = pins
-        .map((pin, i) => `${i + 1}. ${pin.label.toUpperCase()}`)
-        .join("  |  ");
+      // Flat checklist so none are forgotten
+      const checklist = pins.map((p) => p.label.toUpperCase()).join(" | ");
 
-      const useAnchor = Boolean(body.existing_image_url);
+      const hasLayout = Boolean(body.layout_dataurl) && !body.existing_image_url;
 
-      sceneBody =
-        (useAnchor
-          // Re-synthesis: don't say "preserve" (makes the model resist new additions).
-          // Instead say "evolve" — maintain the general composition but make sure
-          // every listed landmark is clearly present, including newly added ones.
-          ? `Evolve this scene so that ALL of the following landmarks are ` +
-            `clearly visible. Integrate any missing landmarks into the composition ` +
-            `without removing those already present. Full landmark inventory:\n`
-          : `A single ultra-wide panoramic ${genreWord} establishing shot ` +
-            `containing EXACTLY ${countWord} (${pins.length}) clearly distinct landmarks:\n`
-        ) +
-        entries.join("\n") + "\n" +
-        `Every landmark listed above MUST be clearly visible and recognisable ` +
-        `in its stated position. Do not omit or merge any landmark. ` +
-        `Composition checklist — all ${pins.length} must be present: ${checklist}. ` +
-        `Ultra-wide frame so all landmarks fit simultaneously. ` +
-        `Each landmark has a unique silhouette and lighting character. ` +
-        `Dramatic ${genreWord} sky, volumetric atmosphere, depth haze, ` +
-        `matte-painting quality, no figures, no text.`;
+      if (hasLayout) {
+        // ── Layout-guided generation ────────────────────────────────────────
+        // The client sent a spatial sketch: coloured blobs on grey, one per
+        // pin. We use this as the img2img start frame so Flux follows the
+        // visual layout. The prompt describes WHAT to render at each blob.
+        sceneBody =
+          `Replace each coloured region in this position guide with the ` +
+          `corresponding real-world subject listed below. ` +
+          `Preserve the exact spatial layout of the guide — each subject MUST ` +
+          `appear at the same location as its coloured blob.\n\n` +
+          `Subjects (left → right order):\n` +
+          entries.join("\n") + "\n\n" +
+          `Complete subject inventory (ALL must be present): ${checklist}.\n` +
+          `Wide-angle composition, all subjects simultaneously visible. ` +
+          `${genreWord} atmosphere, dramatic lighting, no text overlays.`;
+      } else if (body.existing_image_url) {
+        // ── Re-synthesis: integrate new subjects without moving existing ones ──
+        sceneBody =
+          `Evolve this existing scene. Keep all currently rendered subjects ` +
+          `exactly where they are. Add any missing subjects from the list below ` +
+          `into the composition at the indicated positions.\n\n` +
+          `Full subject inventory:\n` +
+          entries.join("\n") + "\n\n" +
+          `ALL of the following must be clearly visible: ${checklist}. ` +
+          `Maintain the existing lighting, atmosphere and style.`;
+      } else {
+        // ── Pure text-to-image (no anchor available) ───────────────────────
+        sceneBody =
+          `A single wide-angle ${genreWord} establishing shot containing ` +
+          `exactly ${pins.length} distinct subject${pins.length > 1 ? "s" : ""}. ` +
+          `Compose them from left to right in this order:\n` +
+          entries.join("\n") + "\n\n" +
+          `All ${pins.length} subject${pins.length > 1 ? "s" : ""} (${checklist}) ` +
+          `must be clearly recognisable. Ultra-wide frame, dramatic ${genreWord} sky.`;
+      }
     }
 
     const prompt =
       `${styleClause}. ${sceneBody} ` +
-      `Masterpiece-quality environment concept art, 8K ultra-detailed, ` +
-      `rich colour grading — pure cinematic world backdrop.`;
+      `Masterpiece-quality environment art, 8K ultra-detailed, rich colour grading, ` +
+      `no people, no text, no UI.`;
 
-    // ── Upload existing scenery as img2img anchor if provided ─────────────────
-    // Low strength (0.35) means the existing layout is ~65% preserved, so
-    // positions of already-rendered landmarks don't drift when new ones are added.
+    // ── Determine img2img anchor ─────────────────────────────────────────────
+    // Priority order:
+    //   1. Re-synthesis: existing rendered image (preserves current layout)
+    //   2. First generation: layout sketch (gives Flux a spatial position map)
+    //   3. No anchor: pure text-to-image
     let anchorCdnUrl: string | undefined;
+    let anchorStrength = 0.65;
+
     if (body.existing_image_url && process.env.FAL_KEY) {
       try {
         const resp = await fetch(body.existing_image_url);
         if (resp.ok) {
           const buffer = await resp.arrayBuffer();
-          const blob = new Blob([buffer], { type: "image/png" });
-          anchorCdnUrl = await fal.storage.upload(blob);
+          anchorCdnUrl   = await fal.storage.upload(new Blob([buffer], { type: "image/png" }));
+          anchorStrength = 0.55; // enough creative budget to add new subjects
         }
       } catch (err) {
-        console.warn("Anchor image upload failed, falling back to t2i", err);
+        console.warn("Existing image upload failed — falling back", err);
+      }
+    } else if (body.layout_dataurl && process.env.FAL_KEY) {
+      try {
+        // Data URL format: "data:image/jpeg;base64,<b64>"
+        const comma    = body.layout_dataurl.indexOf(",");
+        const base64   = body.layout_dataurl.slice(comma + 1);
+        const buffer   = Buffer.from(base64, "base64");
+        anchorCdnUrl   = await fal.storage.upload(new Blob([buffer], { type: "image/jpeg" }));
+        // 0.80 strength: strong enough to fully generate the real scene,
+        // but the model still uses the spatial skeleton from the sketch.
+        anchorStrength = 0.80;
+      } catch (err) {
+        console.warn("Layout sketch upload failed — falling back to t2i", err);
       }
     }
 
     const imageUrl = await falSubscribeImage({
       prompt,
-      model: anchorCdnUrl
-        ? "fal-ai/flux/dev/image-to-image"
-        : "fal-ai/flux/dev",
+      model: anchorCdnUrl ? "fal-ai/flux/dev/image-to-image" : "fal-ai/flux/dev",
       imageUrl: anchorCdnUrl,
-      // 0.55 = 45% of the existing composition is preserved (general layout stable)
-      // while 55% creative budget lets Flux physically build in dramatic new
-      // elements like volcanoes into an already-rendered cyberpunk city.
-      strength: 0.55,
+      strength: anchorStrength,
       width: 1280,
       height: 720,
     });
