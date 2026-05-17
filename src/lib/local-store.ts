@@ -22,12 +22,12 @@ const USE_BLOB = !!process.env.BLOB_READ_WRITE_TOKEN
 // ── Blob mode (Vercel production) ─────────────────────────────────────────────
 
 async function blobRead<T>(key: string): Promise<T> {
-  const { head } = await import("@vercel/blob")
+  const { get } = await import("@vercel/blob")
   try {
-    const meta = await head(`sagasandbox/${key}`)
-    const res = await fetch(meta.url, { cache: "no-store" })
-    if (!res.ok) return [] as unknown as T
-    return (await res.json()) as T
+    const result = await get(`sagasandbox/${key}`, { access: "private" })
+    if (!result) return [] as unknown as T
+    const response = new Response(result.stream)
+    return (await response.json()) as T
   } catch {
     return [] as unknown as T
   }
@@ -36,17 +36,19 @@ async function blobRead<T>(key: string): Promise<T> {
 async function blobWrite<T>(key: string, data: T): Promise<void> {
   const { put } = await import("@vercel/blob")
   await put(`sagasandbox/${key}`, JSON.stringify(data, null, 2), {
-    access: "public",
+    access: "private",
     contentType: "application/json",
     addRandomSuffix: false,
   })
 }
 
 async function blobDelete(key: string): Promise<void> {
-  const { head, del } = await import("@vercel/blob")
+  const { list, del } = await import("@vercel/blob")
   try {
-    const meta = await head(`sagasandbox/${key}`)
-    await del(meta.url)
+    const { blobs } = await list({ prefix: `sagasandbox/${key}` })
+    if (blobs.length > 0) {
+      await del(blobs.map((b) => b.url))
+    }
   } catch {
     // already gone
   }
